@@ -44,6 +44,18 @@ Fisierul activ este:
 
 Porneste de la `bitx-attack-check.conf.example`. Adauga IP-urile de incredere in `IGNORE_IPS`.
 
+## Whitelist / IP-uri permise
+
+Format recomandat:
+
+```ini
+IGNORE_IP=127.0.0.1|localhost
+IGNORE_IP=::1|localhost IPv6
+IGNORE_IP=192.0.2.10|External monitoring
+```
+
+`IGNORE_IP=` poate fi repetat. Textul dupa `|` este descrierea IP-ului. Formatul vechi `IGNORE_IPS=ip1,ip2` ramane suportat pentru compatibilitate.
+
 ## Utilizare
 
 ```bash
