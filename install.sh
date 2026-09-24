@@ -4,6 +4,7 @@ set -euo pipefail
 APP_NAME="bitx-attack-check"
 APP_DIR="/opt/${APP_NAME}"
 INSTALL_PATH="${APP_DIR}/${APP_NAME}"
+COMMAND_LINK="/usr/local/sbin/${APP_NAME}"
 CONFIG_PATH="${APP_DIR}/${APP_NAME}.conf"
 STATE_DIR="${APP_DIR}/data"
 SERVICE_PATH="/etc/systemd/system/${APP_NAME}.service"
@@ -27,6 +28,7 @@ echo "Instalez ${APP_NAME} in ${APP_DIR}..."
 install -d -o root -g root -m 0755 "${APP_DIR}"
 install -d -o root -g root -m 0700 "${STATE_DIR}"
 install -o root -g root -m 0755 "${SOURCE_SCRIPT}" "${INSTALL_PATH}"
+ln -sfn "${INSTALL_PATH}" "${COMMAND_LINK}"
 
 if [[ ! -e "${CONFIG_PATH}" ]]; then
     if [[ -f /etc/${APP_NAME}.conf ]]; then
@@ -85,6 +87,7 @@ echo
 echo "Instalare terminata."
 echo "App    : ${APP_DIR}"
 echo "Script : ${INSTALL_PATH}"
+echo "Command: ${COMMAND_LINK} -> ${INSTALL_PATH}"
 echo "Config : ${CONFIG_PATH}"
 echo "State  : ${STATE_DIR}/blocks.json"
 echo
