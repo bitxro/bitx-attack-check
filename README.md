@@ -1,0 +1,88 @@
+# BITX Attack Check
+
+Detector si autoblocker pentru servere Virtualmin cu firewalld.
+
+Analizeaza logurile Virtualmin, identifica probe/scannere web, probe WordPress, erori FastCGI si semnale OOM, iar in modul `--block` poate adauga reguli runtime DROP in firewalld.
+
+## Structura instalata
+
+```text
+/opt/bitx-attack-check/
+├── bitx-attack-check
+├── bitx-attack-check.conf
+└── data/
+    └── blocks.json
+```
+
+Unitatile systemd sunt instalate in `/etc/systemd/system/`.
+
+## Instalare
+
+Cloneaza repository-ul, apoi:
+
+```bash
+cd bitx-attack-check
+chmod +x install.sh
+sudo ./install.sh
+```
+
+Installerul:
+- instaleaza aplicatia in `/opt/bitx-attack-check`;
+- pastreaza configul local existent la upgrade;
+- la migrare, importa automat `/etc/bitx-attack-check.conf` daca exista;
+- importa `/var/lib/bitx-attack-check/blocks.json` daca noul state nu exista;
+- instaleaza si activeaza timerul systemd;
+- ruleaza un dry-run la final.
+
+## Configurare
+
+Fisierul activ este:
+
+```text
+/opt/bitx-attack-check/bitx-attack-check.conf
+```
+
+Porneste de la `bitx-attack-check.conf.example`. Adauga IP-urile de incredere in `IGNORE_IPS`.
+
+## Utilizare
+
+```bash
+/opt/bitx-attack-check/bitx-attack-check 60 --dry-run
+/opt/bitx-attack-check/bitx-attack-check 15 --block
+/opt/bitx-attack-check/bitx-attack-check --blocked
+/opt/bitx-attack-check/bitx-attack-check --unblock IP
+```
+
+## Systemd
+
+```bash
+systemctl status bitx-attack-check.timer
+systemctl status bitx-attack-check.service
+journalctl -u bitx-attack-check.service
+```
+
+Timerul ruleaza la fiecare 10 minute si verifica ultimele 15 minute.
+
+## Dezinstalare
+
+Pastreaza configul si state-ul:
+
+```bash
+sudo ./uninstall.sh
+```
+
+Stergere completa a instalarii din `/opt`:
+
+```bash
+sudo ./uninstall.sh --purge
+```
+
+Regulile firewalld runtime deja create nu sunt eliminate automat de uninstall; pot expira conform timeout-ului sau pot fi eliminate explicit inainte de purge.
+
+## Fisiere din repository
+
+- `bitx-attack-check` - aplicatia
+- `install.sh` - installer
+- `uninstall.sh` - dezinstalare
+- `bitx-attack-check.conf.example` - configuratie exemplu
+- `.gitignore` - exclude configuratii locale si fisiere temporare
