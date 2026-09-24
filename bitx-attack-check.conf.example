@@ -7,8 +7,13 @@ FIREWALL_ZONE=public
 BLOCK_TIME=24h
 BLOCK_HOURS=24
 
-# Comma-separated trusted IP addresses.
-IGNORE_IPS=127.0.0.1,::1
+# Recommended: one trusted IP per line, optionally followed by a description.
+IGNORE_IP=127.0.0.1|localhost
+IGNORE_IP=::1|localhost IPv6
+# IGNORE_IP=192.0.2.10|External monitoring
+
+# Legacy format remains supported:
+# IGNORE_IPS=127.0.0.1,::1
 
 SCAN_LIMIT=5
 SCAN_WITH_4XX_LIMIT=2
