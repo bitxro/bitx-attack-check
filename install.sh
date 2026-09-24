@@ -2,77 +2,56 @@
 set -euo pipefail
 
 APP_NAME="bitx-attack-check"
-INSTALL_PATH="/usr/local/sbin/${APP_NAME}"
-CONFIG_PATH="/etc/${APP_NAME}.conf"
-STATE_DIR="/var/lib/${APP_NAME}"
+APP_DIR="/opt/${APP_NAME}"
+INSTALL_PATH="${APP_DIR}/${APP_NAME}"
+CONFIG_PATH="${APP_DIR}/${APP_NAME}.conf"
+STATE_DIR="${APP_DIR}/data"
 SERVICE_PATH="/etc/systemd/system/${APP_NAME}.service"
 TIMER_PATH="/etc/systemd/system/${APP_NAME}.timer"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_SCRIPT="${SCRIPT_DIR}/${APP_NAME}"
+SOURCE_CONFIG="${SCRIPT_DIR}/${APP_NAME}.conf.example"
 
 if [[ ${EUID} -ne 0 ]]; then
     echo "Ruleaza installerul ca root: sudo ./install.sh"
     exit 1
 fi
 
-if [[ ! -f "${SOURCE_SCRIPT}" ]]; then
-    echo "Eroare: nu gasesc ${SOURCE_SCRIPT}"
-    echo "Ruleaza install.sh din directorul repository-ului."
-    exit 1
-fi
+[[ -f "${SOURCE_SCRIPT}" ]] || { echo "Eroare: lipseste ${SOURCE_SCRIPT}"; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "Eroare: python3 nu este instalat."; exit 1; }
+command -v firewall-cmd >/dev/null 2>&1 || { echo "Eroare: firewall-cmd nu este disponibil."; exit 1; }
+[[ -d /var/log/virtualmin ]] || { echo "Eroare: /var/log/virtualmin nu exista."; exit 1; }
 
-command -v python3 >/dev/null 2>&1 || {
-    echo "Eroare: python3 nu este instalat."
-    exit 1
-}
-
-command -v firewall-cmd >/dev/null 2>&1 || {
-    echo "Eroare: firewall-cmd nu este disponibil."
-    echo "Instaleaza/activeaza firewalld inainte de instalare."
-    exit 1
-}
-
-if [[ ! -d /var/log/virtualmin ]]; then
-    echo "Eroare: /var/log/virtualmin nu exista."
-    echo "Acest installer este destinat serverelor Virtualmin."
-    exit 1
-fi
-
-echo "Instalez ${APP_NAME}..."
-
-install -o root -g root -m 0755 "${SOURCE_SCRIPT}" "${INSTALL_PATH}"
+echo "Instalez ${APP_NAME} in ${APP_DIR}..."
+install -d -o root -g root -m 0755 "${APP_DIR}"
 install -d -o root -g root -m 0700 "${STATE_DIR}"
+install -o root -g root -m 0755 "${SOURCE_SCRIPT}" "${INSTALL_PATH}"
 
 if [[ ! -e "${CONFIG_PATH}" ]]; then
-    cat > "${CONFIG_PATH}" <<'EOF'
-# BITX Attack Check
-# Valorile de mai jos corespund valorilor implicite din script.
-
-LOGDIR=/var/log/virtualmin
-FIREWALL_ZONE=public
-
-BLOCK_TIME=24h
-BLOCK_HOURS=24
-
-# IP-uri separate prin virgula. Adauga aici IP-urile de incredere.
-IGNORE_IPS=127.0.0.1,::1
-
-SCAN_LIMIT=5
-SCAN_WITH_4XX_LIMIT=2
-SCAN_4XX_MIN=20
-WP_LIMIT=20
-EOF
-    chmod 0600 "${CONFIG_PATH}"
-    chown root:root "${CONFIG_PATH}"
-    echo "Creat: ${CONFIG_PATH}"
+    if [[ -f /etc/${APP_NAME}.conf ]]; then
+        install -o root -g root -m 0600 /etc/${APP_NAME}.conf "${CONFIG_PATH}"
+        echo "Migrat config existent: /etc/${APP_NAME}.conf -> ${CONFIG_PATH}"
+    elif [[ -f "${SOURCE_CONFIG}" ]]; then
+        install -o root -g root -m 0600 "${SOURCE_CONFIG}" "${CONFIG_PATH}"
+        echo "Creat config din exemplu: ${CONFIG_PATH}"
+    else
+        echo "Eroare: nu exista config existent si nici ${SOURCE_CONFIG}"
+        exit 1
+    fi
 else
     echo "Pastrez configuratia existenta: ${CONFIG_PATH}"
 fi
 
+# Migreaza state-ul vechi numai daca noul state nu exista deja.
+if [[ ! -e "${STATE_DIR}/blocks.json" && -f /var/lib/${APP_NAME}/blocks.json ]]; then
+    install -o root -g root -m 0600 /var/lib/${APP_NAME}/blocks.json "${STATE_DIR}/blocks.json"
+    echo "Migrat state existent in ${STATE_DIR}/blocks.json"
+fi
+
 cat > "${SERVICE_PATH}" <<EOF
 [Unit]
-Description=BITX Virtualmin attack check
+Description=BITX Attack Check - Virtualmin auto-block
 After=network-online.target firewalld.service
 Wants=network-online.target
 
@@ -83,7 +62,7 @@ EOF
 
 cat > "${TIMER_PATH}" <<'EOF'
 [Unit]
-Description=Run BITX Virtualmin attack check every 10 minutes
+Description=Run BITX Attack Check every 10 minutes
 
 [Timer]
 OnBootSec=5min
@@ -104,8 +83,9 @@ echo "Verificare dry-run:"
 
 echo
 echo "Instalare terminata."
+echo "App    : ${APP_DIR}"
 echo "Script : ${INSTALL_PATH}"
 echo "Config : ${CONFIG_PATH}"
-echo "State  : ${STATE_DIR}"
+echo "State  : ${STATE_DIR}/blocks.json"
 echo
 systemctl --no-pager status "${APP_NAME}.timer" || true
