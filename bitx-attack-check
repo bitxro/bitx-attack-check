@@ -14,8 +14,9 @@ from collections import defaultdict, Counter
 from urllib.parse import urlsplit
 
 
-CONFIG_FILE = "/etc/bitx-attack-check.conf"
-STATE_DIR = "/var/lib/bitx-attack-check"
+APP_DIR = os.path.dirname(os.path.realpath(__file__))
+CONFIG_FILE = os.path.join(APP_DIR, "bitx-attack-check.conf")
+STATE_DIR = os.path.join(APP_DIR, "data")
 STATE_FILE = os.path.join(STATE_DIR, "blocks.json")
 
 
