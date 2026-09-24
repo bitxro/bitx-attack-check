@@ -1,0 +1,13 @@
+# Local configuration / secrets
+.env
+*.env
+bitx-attack-check.conf
+
+# Logs / temporary files
+*.log
+*.bak
+*.tmp
+
+# Python
+__pycache__/
+*.pyc
