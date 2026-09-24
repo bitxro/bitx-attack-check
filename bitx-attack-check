@@ -690,6 +690,72 @@ def show_blocked():
 args = sys.argv[1:]
 
 
+def show_help():
+
+    print("""
+BITX Attack Check
+
+Usage:
+  bitx-attack-check [minute] [domeniu] [--dry-run|--block]
+  bitx-attack-check --blocked
+  bitx-attack-check --unblock IP
+  bitx-attack-check --whitelist
+  bitx-attack-check -h | --help
+
+Commands:
+  -h, --help              Afiseaza acest ajutor
+  --blocked               Afiseaza IP-urile blocate activ
+  --unblock IP            Elimina blocarea pentru IP
+  --whitelist             Afiseaza IP-urile permise si descrierile lor
+  --dry-run               Analizeaza fara sa blocheze
+  --block                 Analizeaza si aplica autoblock
+
+Examples:
+  bitx-attack-check 15 --dry-run
+  bitx-attack-check 60 --dry-run
+  bitx-attack-check 60 exemplu.ro --dry-run
+  bitx-attack-check 15 --block
+  bitx-attack-check --blocked
+  bitx-attack-check --unblock 192.0.2.10
+  bitx-attack-check --whitelist
+
+Config:
+  """ + CONFIG_FILE + """
+
+State:
+  """ + STATE_FILE + """
+""")
+
+
+def show_whitelist():
+
+    print()
+    print("===== BITX WHITELIST =====")
+    print()
+    print(f"{'IP':39} DESCRIPTION")
+    print("-" * 80)
+
+    for ip in sorted(IGNORE_IPS):
+        description = IGNORE_IP_DESCRIPTIONS.get(ip, "-")
+        print(f"{ip:39} {description}")
+
+    print()
+    print(f"Active: {len(IGNORE_IPS)}")
+    print()
+
+
+if "-h" in args or "--help" in args:
+
+    show_help()
+    sys.exit(0)
+
+
+if "--whitelist" in args:
+
+    show_whitelist()
+    sys.exit(0)
+
+
 if "--blocked" in args:
 
     show_blocked()
