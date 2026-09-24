@@ -27,6 +27,7 @@ STATE_FILE = os.path.join(STATE_DIR, "blocks.json")
 def load_config():
 
     config = {}
+    repeated = defaultdict(list)
 
     try:
         with open(CONFIG_FILE, "r") as fh:
@@ -43,12 +44,18 @@ def load_config():
                     continue
 
                 key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
 
-                config[key.strip()] = value.strip()
+                if key == "IGNORE_IP":
+                    repeated[key].append(value)
+                else:
+                    config[key] = value
 
     except FileNotFoundError:
         pass
 
+    config.update(repeated)
     return config
 
 
@@ -76,6 +83,8 @@ BLOCK_HOURS = int(
     )
 )
 
+IGNORE_IP_DESCRIPTIONS = {}
+
 IGNORE_IPS = {
     x.strip()
     for x in CONFIG.get(
@@ -84,6 +93,19 @@ IGNORE_IPS = {
     ).split(",")
     if x.strip()
 }
+
+for entry in CONFIG.get("IGNORE_IP", []):
+    ip, separator, description = entry.partition("|")
+    ip = ip.strip()
+    description = description.strip()
+
+    if not ip:
+        continue
+
+    IGNORE_IPS.add(ip)
+
+    if separator and description:
+        IGNORE_IP_DESCRIPTIONS[ip] = description
 
 BLOCK_SCAN = int(
     CONFIG.get(
