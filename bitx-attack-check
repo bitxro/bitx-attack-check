@@ -1,0 +1,1521 @@
+#!/usr/bin/env python3
+
+import sys
+import os
+import re
+import glob
+import gzip
+import json
+import subprocess
+import ipaddress
+
+from datetime import datetime, timedelta
+from collections import defaultdict, Counter
+from urllib.parse import urlsplit
+
+
+CONFIG_FILE = "/etc/bitx-attack-check.conf"
+STATE_DIR = "/var/lib/bitx-attack-check"
+STATE_FILE = os.path.join(STATE_DIR, "blocks.json")
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+def load_config():
+
+    config = {}
+
+    try:
+        with open(CONFIG_FILE, "r") as fh:
+
+            for line in fh:
+
+                line = line.strip()
+
+                if (
+                    not line
+                    or line.startswith("#")
+                    or "=" not in line
+                ):
+                    continue
+
+                key, value = line.split("=", 1)
+
+                config[key.strip()] = value.strip()
+
+    except FileNotFoundError:
+        pass
+
+    return config
+
+
+CONFIG = load_config()
+
+LOGDIR = CONFIG.get(
+    "LOGDIR",
+    "/var/log/virtualmin"
+)
+
+FIREWALL_ZONE = CONFIG.get(
+    "FIREWALL_ZONE",
+    "public"
+)
+
+BLOCK_TIME = CONFIG.get(
+    "BLOCK_TIME",
+    "24h"
+)
+
+BLOCK_HOURS = int(
+    CONFIG.get(
+        "BLOCK_HOURS",
+        "24"
+    )
+)
+
+IGNORE_IPS = {
+    x.strip()
+    for x in CONFIG.get(
+        "IGNORE_IPS",
+        "127.0.0.1,::1"
+    ).split(",")
+    if x.strip()
+}
+
+BLOCK_SCAN = int(
+    CONFIG.get(
+        "SCAN_LIMIT",
+        "5"
+    )
+)
+
+BLOCK_SCAN_WITH_4XX = int(
+    CONFIG.get(
+        "SCAN_WITH_4XX_LIMIT",
+        "2"
+    )
+)
+
+BLOCK_SCAN_4XX_MIN = int(
+    CONFIG.get(
+        "SCAN_4XX_MIN",
+        "20"
+    )
+)
+
+BLOCK_WP = int(
+    CONFIG.get(
+        "WP_LIMIT",
+        "20"
+    )
+)
+
+
+MONTHS = {
+    "Jan": 1,
+    "Feb": 2,
+    "Mar": 3,
+    "Apr": 4,
+    "May": 5,
+    "Jun": 6,
+    "Jul": 7,
+    "Aug": 8,
+    "Sep": 9,
+    "Oct": 10,
+    "Nov": 11,
+    "Dec": 12,
+}
+
+
+HARD_PATTERNS = (
+    "/.env",
+    "/.git/",
+    "/.aws/",
+    "/.docker/",
+    "/.config/",
+    "/.svn/",
+    "/.hg/",
+    "/.boto",
+    "/.amplifyrc",
+    "/wp-content/debug.log",
+    "/wp-content/mysql.sql",
+    "/wp-config.php.bak",
+    "/wp-config.php.old",
+    "/wp-config.php.save",
+    "/wp-config.php~",
+    "/phpinfo.php",
+    "/info.php",
+    "/ws_ftp.log",
+    "/wp_mail_smtp.ini",
+    "/vendor/phpunit/",
+    "eval-stdin.php",
+    "/terraform",
+    "/vercel.json",
+)
+
+
+WP_PROBES = (
+    "/wp-login.php",
+    "/xmlrpc.php",
+)
+
+
+FCGID_PATTERNS = {
+    "slots": "can't apply process slot",
+    "timeout": "read data timeout",
+    "broken": "ap_pass_brigade failed",
+    "headers": "end of script output before headers",
+}
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def open_log(path):
+
+    if path.endswith(".gz"):
+        return gzip.open(
+            path,
+            "rt",
+            errors="replace"
+        )
+
+    return open(
+        path,
+        "r",
+        errors="replace"
+    )
+
+
+def access_datetime(line):
+
+    m = re.search(
+        r'\[(\d{2})/([A-Za-z]{3})/(\d{4}):'
+        r'(\d{2}):(\d{2}):(\d{2}) [+-]\d{4}\]',
+        line
+    )
+
+    if not m:
+        return None
+
+    d, mon, y, hh, mm, ss = m.groups()
+
+    try:
+
+        return datetime(
+            int(y),
+            MONTHS[mon],
+            int(d),
+            int(hh),
+            int(mm),
+            int(ss)
+        )
+
+    except Exception:
+        return None
+
+
+def error_datetime(line):
+
+    m = re.match(
+        r'^\[[A-Za-z]{3} ([A-Za-z]{3}) +(\d{1,2}) '
+        r'(\d{2}):(\d{2}):(\d{2})(?:\.\d+)? (\d{4})\]',
+        line
+    )
+
+    if not m:
+        return None
+
+    mon, d, hh, mm, ss, y = m.groups()
+
+    try:
+
+        return datetime(
+            int(y),
+            MONTHS[mon],
+            int(d),
+            int(hh),
+            int(mm),
+            int(ss)
+        )
+
+    except Exception:
+        return None
+
+
+def domain_from_file(path, marker):
+
+    name = os.path.basename(path)
+
+    return name.split(marker)[0]
+
+
+def client_from_error(line):
+
+    m = re.search(
+        r'\[client ([^\]]+)\]',
+        line
+    )
+
+    if not m:
+        return "-"
+
+    value = m.group(1)
+
+    if re.match(
+        r'^\d+\.\d+\.\d+\.\d+:\d+$',
+        value
+    ):
+        return value.rsplit(":", 1)[0]
+
+    return value
+
+
+def valid_ip(ip):
+
+    try:
+        ipaddress.ip_address(ip)
+        return True
+
+    except ValueError:
+        return False
+
+
+# ============================================================
+# STATE
+# ============================================================
+
+def load_state():
+
+    try:
+
+        with open(
+            STATE_FILE,
+            "r"
+        ) as fh:
+
+            data = json.load(fh)
+
+        if isinstance(data, dict):
+            return data
+
+    except (
+        FileNotFoundError,
+        json.JSONDecodeError,
+        OSError
+    ):
+        pass
+
+    return {}
+
+
+def save_state(state):
+
+    os.makedirs(
+        STATE_DIR,
+        mode=0o700,
+        exist_ok=True
+    )
+
+    tmp = STATE_FILE + ".tmp"
+
+    with open(
+        tmp,
+        "w"
+    ) as fh:
+
+        json.dump(
+            state,
+            fh,
+            indent=2,
+            sort_keys=True
+        )
+
+    os.chmod(
+        tmp,
+        0o600
+    )
+
+    os.replace(
+        tmp,
+        STATE_FILE
+    )
+
+
+def register_block(ip, reason):
+
+    state = load_state()
+
+    blocked = datetime.now()
+
+    expires = blocked + timedelta(
+        hours=BLOCK_HOURS
+    )
+
+    state[ip] = {
+        "blocked":
+            blocked.isoformat(
+                timespec="seconds"
+            ),
+
+        "expires":
+            expires.isoformat(
+                timespec="seconds"
+            ),
+
+        "reason":
+            reason,
+    }
+
+    save_state(state)
+
+
+def remove_state_block(ip):
+
+    state = load_state()
+
+    if ip in state:
+
+        del state[ip]
+
+        save_state(state)
+
+
+def remaining_time(expires):
+
+    seconds = int(
+        (
+            expires
+            - datetime.now()
+        ).total_seconds()
+    )
+
+    if seconds <= 0:
+        return "expired"
+
+    hours, rem = divmod(
+        seconds,
+        3600
+    )
+
+    minutes = rem // 60
+
+    if hours:
+        return f"{hours}h {minutes:02}m"
+
+    return f"{minutes}m"
+
+
+# ============================================================
+# FIREWALL
+# ============================================================
+
+def run_firewall(args):
+
+    try:
+
+        result = subprocess.run(
+            ["firewall-cmd"] + args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=20
+        )
+
+        return (
+            result.returncode,
+            result.stdout.strip(),
+            result.stderr.strip()
+        )
+
+    except Exception as e:
+
+        return 1, "", str(e)
+
+
+def firewall_rule(ip):
+
+    obj = ipaddress.ip_address(ip)
+
+    family = (
+        "ipv4"
+        if obj.version == 4
+        else "ipv6"
+    )
+
+    return (
+        f'rule family="{family}" '
+        f'source address="{ip}" drop'
+    )
+
+
+def firewall_block(ip, reason):
+
+    if ip in IGNORE_IPS:
+        return False, "WHITELIST"
+
+    if not valid_ip(ip):
+        return False, "INVALID-IP"
+
+    rule = firewall_rule(ip)
+
+    rc, out, err = run_firewall([
+        f"--zone={FIREWALL_ZONE}",
+        "--query-rich-rule",
+        rule
+    ])
+
+    if rc == 0:
+        return False, "ALREADY-BLOCKED"
+
+    rc, out, err = run_firewall([
+        f"--zone={FIREWALL_ZONE}",
+        "--add-rich-rule",
+        rule,
+        f"--timeout={BLOCK_TIME}"
+    ])
+
+    if rc == 0:
+
+        register_block(
+            ip,
+            reason
+        )
+
+        return (
+            True,
+            f"BLOCKED-{BLOCK_TIME}"
+        )
+
+    return (
+        False,
+        f"ERROR: {err or out}"
+    )
+
+
+def firewall_unblock(ip):
+
+    if not valid_ip(ip):
+        return False, "INVALID-IP"
+
+    rule = firewall_rule(ip)
+
+    rc, out, err = run_firewall([
+        f"--zone={FIREWALL_ZONE}",
+        "--remove-rich-rule",
+        rule
+    ])
+
+    if rc == 0:
+
+        remove_state_block(ip)
+
+        return True, "UNBLOCKED"
+
+    return (
+        False,
+        err or out or "NOT-BLOCKED"
+    )
+
+
+def get_active_blocked_ips():
+
+    rc, out, err = run_firewall([
+        f"--zone={FIREWALL_ZONE}",
+        "--list-rich-rules"
+    ])
+
+    if rc != 0:
+        return None, err
+
+    active = set()
+
+    for line in out.splitlines():
+
+        if (
+            "source address=" not in line
+            or " drop" not in line
+        ):
+            continue
+
+        m = re.search(
+            r'source address="([^"]+)"',
+            line
+        )
+
+        if m:
+            active.add(
+                m.group(1)
+            )
+
+    return active, None
+
+
+def show_blocked():
+
+    active_ips, err = (
+        get_active_blocked_ips()
+    )
+
+    if active_ips is None:
+
+        print(
+            f"Eroare firewalld: {err}"
+        )
+
+        return
+
+    state = load_state()
+
+    changed = False
+
+    for ip in list(state):
+
+        if ip not in active_ips:
+
+            del state[ip]
+
+            changed = True
+
+    if changed:
+        save_state(state)
+
+    print()
+    print(
+        "===== BITX ACTIVE BLOCKS ====="
+    )
+    print()
+
+    if not active_ips:
+
+        print(
+            "Niciun IP blocat momentan."
+        )
+
+        print()
+
+        return
+
+    print(
+        f"{'IP':39} "
+        f"{'REMAINING':>10}  "
+        f"REASON"
+    )
+
+    print("-" * 80)
+
+    for ip in sorted(
+        active_ips,
+        key=lambda x: (
+            ipaddress.ip_address(x).version,
+            int(ipaddress.ip_address(x))
+        )
+    ):
+
+        info = state.get(ip)
+
+        if info:
+
+            try:
+
+                expires = (
+                    datetime.fromisoformat(
+                        info["expires"]
+                    )
+                )
+
+                remaining = (
+                    remaining_time(
+                        expires
+                    )
+                )
+
+            except Exception:
+
+                remaining = "?"
+
+            reason = info.get(
+                "reason",
+                "-"
+            )
+
+        else:
+
+            remaining = "?"
+            reason = "pre-existing"
+
+        print(
+            f"{ip:39} "
+            f"{remaining:>10}  "
+            f"{reason}"
+        )
+
+    print()
+    print(
+        f"Active: {len(active_ips)}"
+    )
+    print()
+
+
+# ============================================================
+# COMMAND LINE
+# ============================================================
+
+args = sys.argv[1:]
+
+
+if "--blocked" in args:
+
+    show_blocked()
+
+    sys.exit(0)
+
+
+if "--unblock" in args:
+
+    try:
+
+        idx = args.index(
+            "--unblock"
+        )
+
+        ip = args[idx + 1]
+
+    except (
+        ValueError,
+        IndexError
+    ):
+
+        print(
+            "Usage: "
+            "bitx-attack-check "
+            "--unblock IP"
+        )
+
+        sys.exit(1)
+
+    ok, msg = firewall_unblock(ip)
+
+    print(
+        f"{ip}: {msg}"
+    )
+
+    sys.exit(
+        0 if ok else 1
+    )
+
+
+block_mode = (
+    "--block" in args
+)
+
+dry_run = (
+    "--dry-run" in args
+)
+
+args = [
+    x
+    for x in args
+    if x not in (
+        "--block",
+        "--dry-run"
+    )
+]
+
+
+try:
+
+    minutes = (
+        int(args[0])
+        if len(args) > 0
+        else 60
+    )
+
+except ValueError:
+
+    print(
+        "Usage: "
+        "bitx-attack-check "
+        "[minute] [domeniu] "
+        "[--dry-run|--block]"
+    )
+
+    sys.exit(1)
+
+
+domain_filter = (
+    args[1]
+    if len(args) > 1
+    else None
+)
+
+
+# ============================================================
+# TIME
+# ============================================================
+
+now = datetime.now()
+
+cutoff = (
+    now
+    - timedelta(
+        minutes=minutes
+    )
+)
+
+
+# ============================================================
+# STATS
+# ============================================================
+
+stats = defaultdict(
+    lambda: {
+        "total": 0,
+        "hard": 0,
+        "wp": 0,
+        "4xx": 0,
+        "5xx": 0,
+    }
+)
+
+paths = Counter()
+
+fcgid = defaultdict(
+    Counter
+)
+
+
+# ============================================================
+# ACCESS LOGS
+# ============================================================
+
+for logfile in glob.glob(
+    f"{LOGDIR}/*_access_log*"
+):
+
+    domain = domain_from_file(
+        logfile,
+        "_access_log"
+    )
+
+    if (
+        domain_filter
+        and domain != domain_filter
+    ):
+        continue
+
+    try:
+
+        if os.path.getmtime(
+            logfile
+        ) < (
+            cutoff
+            - timedelta(days=2)
+        ).timestamp():
+            continue
+
+    except OSError:
+        continue
+
+    try:
+        fh = open_log(logfile)
+
+    except Exception:
+        continue
+
+    with fh:
+
+        for line in fh:
+
+            dt = access_datetime(line)
+
+            if (
+                not dt
+                or dt < cutoff
+            ):
+                continue
+
+            parts = line.split()
+
+            if not parts:
+                continue
+
+            ip = parts[0]
+
+            req = re.search(
+                r'"(?:GET|POST|HEAD|PUT|DELETE|OPTIONS|PATCH) ([^ ]+)',
+                line
+            )
+
+            status_match = re.search(
+                r'"\s+(\d{3})\s',
+                line
+            )
+
+            target = (
+                req.group(1)
+                if req
+                else "/"
+            )
+
+            try:
+
+                path = urlsplit(
+                    target
+                ).path
+
+            except Exception:
+
+                path = target
+
+            low = path.lower()
+
+            status = (
+                int(
+                    status_match.group(1)
+                )
+                if status_match
+                else 0
+            )
+
+            key = (
+                domain,
+                ip
+            )
+
+            stats[key]["total"] += 1
+
+            if 400 <= status <= 499:
+                stats[key]["4xx"] += 1
+
+            if 500 <= status <= 599:
+                stats[key]["5xx"] += 1
+
+            hard = any(
+                low == p
+                or low.startswith(p)
+                for p in HARD_PATTERNS
+            )
+
+            if hard:
+
+                stats[key]["hard"] += 1
+
+                paths[
+                    (
+                        domain,
+                        ip,
+                        low
+                    )
+                ] += 1
+
+            if low in WP_PROBES:
+
+                stats[key]["wp"] += 1
+
+                paths[
+                    (
+                        domain,
+                        ip,
+                        low
+                    )
+                ] += 1
+
+
+# ============================================================
+# ERROR LOGS / FCGID
+# ============================================================
+
+for logfile in glob.glob(
+    f"{LOGDIR}/*_error_log*"
+):
+
+    domain = domain_from_file(
+        logfile,
+        "_error_log"
+    )
+
+    if (
+        domain_filter
+        and domain != domain_filter
+    ):
+        continue
+
+    try:
+
+        if os.path.getmtime(
+            logfile
+        ) < (
+            cutoff
+            - timedelta(days=2)
+        ).timestamp():
+            continue
+
+    except OSError:
+        continue
+
+    try:
+        fh = open_log(logfile)
+
+    except Exception:
+        continue
+
+    with fh:
+
+        for line in fh:
+
+            dt = error_datetime(line)
+
+            if (
+                not dt
+                or dt < cutoff
+            ):
+                continue
+
+            low = line.lower()
+
+            for (
+                name,
+                pattern
+            ) in FCGID_PATTERNS.items():
+
+                if pattern in low:
+
+                    ip = (
+                        client_from_error(
+                            line
+                        )
+                    )
+
+                    fcgid[
+                        (
+                            domain,
+                            ip
+                        )
+                    ][name] += 1
+
+
+# ============================================================
+# HEADER
+# ============================================================
+
+print()
+print("=" * 88)
+print(" BITX ATTACK CHECK")
+print("=" * 88)
+
+print(
+    f" Interval : ultimele "
+    f"{minutes} minute"
+)
+
+print(
+    f" De la    : "
+    f"{cutoff:%Y-%m-%d %H:%M:%S}"
+)
+
+print(
+    f" Pana la  : "
+    f"{now:%Y-%m-%d %H:%M:%S}"
+)
+
+if domain_filter:
+
+    print(
+        f" Domeniu  : "
+        f"{domain_filter}"
+    )
+
+else:
+
+    print(
+        " Domeniu  : "
+        "TOATE domeniile Virtualmin"
+    )
+
+if block_mode:
+
+    print(
+        f" Auto-ban : ACTIV "
+        f"({BLOCK_TIME})"
+    )
+
+elif dry_run:
+
+    print(
+        " Auto-ban : DRY-RUN"
+    )
+
+else:
+
+    print(
+        " Auto-ban : OPRIT"
+    )
+
+print()
+
+
+# ============================================================
+# IP SUMMARY
+# ============================================================
+
+rows = []
+
+
+for (
+    domain,
+    ip
+), s in stats.items():
+
+    f = fcgid.get(
+        (
+            domain,
+            ip
+        ),
+        {}
+    )
+
+    fcgi_total = sum(
+        f.values()
+    )
+
+    flags = []
+
+    if s["hard"] >= 2:
+        flags.append("SCAN")
+
+    if s["wp"] >= 10:
+        flags.append("WP-PROBE")
+
+    if s["total"] >= 100:
+        flags.append("FLOOD")
+
+    if s["5xx"] >= 10:
+        flags.append("5XX")
+
+    if fcgi_total >= 5:
+        flags.append("FCGI")
+
+    if ip in IGNORE_IPS:
+        flags = ["KNOWN"]
+
+    if flags:
+
+        score = (
+            s["hard"] * 20
+            + s["wp"] * 3
+            + s["5xx"] * 2
+            + fcgi_total * 5
+            + s["total"] / 10
+        )
+
+        rows.append(
+            (
+                score,
+                domain,
+                ip,
+                s,
+                fcgi_total,
+                ",".join(flags)
+            )
+        )
+
+
+rows.sort(
+    reverse=True
+)
+
+
+print(
+    "===== IP-URI SUSPECTE ====="
+)
+
+
+if not rows:
+
+    print(
+        "Nu am detectat activitate "
+        "care depaseste pragurile."
+    )
+
+else:
+
+    print(
+        f"{'DOMAIN':27} "
+        f"{'IP':39} "
+        f"{'REQ':>6} "
+        f"{'SCAN':>6} "
+        f"{'WP':>5} "
+        f"{'4XX':>6} "
+        f"{'5XX':>6} "
+        f"{'FCGI':>6}  "
+        f"FLAGS"
+    )
+
+    print("-" * 126)
+
+    for (
+        _,
+        domain,
+        ip,
+        s,
+        ftotal,
+        flags
+    ) in rows[:50]:
+
+        print(
+            f"{domain[:27]:27} "
+            f"{ip[:39]:39} "
+            f"{s['total']:6} "
+            f"{s['hard']:6} "
+            f"{s['wp']:5} "
+            f"{s['4xx']:6} "
+            f"{s['5xx']:6} "
+            f"{ftotal:6}  "
+            f"{flags}"
+        )
+
+
+# ============================================================
+# SUSPICIOUS PATHS
+# ============================================================
+
+print()
+print(
+    "===== TOP URL-URI DE SCANARE ====="
+)
+
+
+if not paths:
+
+    print(
+        "Niciun URL evident "
+        "de scanare."
+    )
+
+else:
+
+    for (
+        domain,
+        ip,
+        path
+    ), count in paths.most_common(30):
+
+        print(
+            f"{count:5}  "
+            f"{ip:39} "
+            f"{domain:28} "
+            f"{path}"
+        )
+
+
+# ============================================================
+# FCGID
+# ============================================================
+
+print()
+print(
+    "===== ERORI FASTCGI ====="
+)
+
+fcrows = []
+
+
+for (
+    domain,
+    ip
+), c in fcgid.items():
+
+    total = sum(
+        c.values()
+    )
+
+    fcrows.append(
+        (
+            total,
+            domain,
+            ip,
+            c
+        )
+    )
+
+
+fcrows.sort(
+    reverse=True
+)
+
+
+if not fcrows:
+
+    print(
+        "Nicio eroare FastCGI "
+        "in interval."
+    )
+
+else:
+
+    print(
+        f"{'DOMAIN':27} "
+        f"{'IP':39} "
+        f"{'TOTAL':>6} "
+        f"{'SLOT':>6} "
+        f"{'TIMEOUT':>8} "
+        f"{'BROKEN':>7} "
+        f"{'HEADERS':>8}"
+    )
+
+    print("-" * 121)
+
+    for (
+        total,
+        domain,
+        ip,
+        c
+    ) in fcrows[:30]:
+
+        print(
+            f"{domain[:27]:27} "
+            f"{ip[:39]:39} "
+            f"{total:6} "
+            f"{c['slots']:6} "
+            f"{c['timeout']:8} "
+            f"{c['broken']:7} "
+            f"{c['headers']:8}"
+        )
+
+
+# ============================================================
+# OOM
+# ============================================================
+
+print()
+print(
+    "===== OOM / MEMORY PRESSURE ====="
+)
+
+
+try:
+
+    result = subprocess.run(
+        [
+            "journalctl",
+            "-k",
+            "--since",
+            f"{minutes} minutes ago",
+            "--no-pager"
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=20
+    )
+
+    oom_lines = [
+        x
+        for x in result.stdout.splitlines()
+        if re.search(
+            r'oom-killer|out of memory|'
+            r'killed process|memory pressure',
+            x,
+            re.I
+        )
+    ]
+
+    if oom_lines:
+
+        for line in oom_lines[-30:]:
+            print(line)
+
+    else:
+
+        print(
+            "Niciun OOM detectat "
+            "in kernel in interval."
+        )
+
+except Exception as e:
+
+    print(
+        f"Nu am putut citi "
+        f"journalctl: {e}"
+    )
+
+
+# ============================================================
+# GLOBAL IP AGGREGATION
+# ============================================================
+
+global_stats = defaultdict(
+    lambda: {
+        "total": 0,
+        "hard": 0,
+        "wp": 0,
+        "4xx": 0,
+        "5xx": 0,
+        "domains": set(),
+    }
+)
+
+
+for (
+    domain,
+    ip
+), s in stats.items():
+
+    g = global_stats[ip]
+
+    g["total"] += s["total"]
+    g["hard"] += s["hard"]
+    g["wp"] += s["wp"]
+    g["4xx"] += s["4xx"]
+    g["5xx"] += s["5xx"]
+
+    g["domains"].add(
+        domain
+    )
+
+
+# ============================================================
+# AUTO BLOCK
+# ============================================================
+
+print()
+print(
+    "===== DECIZII AUTO-BLOCK ====="
+)
+
+candidates = []
+
+
+for ip, s in global_stats.items():
+
+    if ip in IGNORE_IPS:
+        continue
+
+    if not valid_ip(ip):
+        continue
+
+    reasons = []
+
+    if s["hard"] >= BLOCK_SCAN:
+
+        reasons.append(
+            f"SCAN={s['hard']}"
+        )
+
+    elif (
+        s["hard"]
+        >= BLOCK_SCAN_WITH_4XX
+        and
+        s["4xx"]
+        >= BLOCK_SCAN_4XX_MIN
+    ):
+
+        reasons.append(
+            f"SCAN={s['hard']}"
+            f"+4XX={s['4xx']}"
+        )
+
+    if s["wp"] >= BLOCK_WP:
+
+        reasons.append(
+            f"WP={s['wp']}"
+        )
+
+    if reasons:
+
+        candidates.append(
+            (
+                ip,
+                s,
+                ",".join(reasons)
+            )
+        )
+
+
+if not candidates:
+
+    print(
+        "Niciun IP nu indeplineste "
+        "criteriile de autoblock."
+    )
+
+else:
+
+    candidates.sort(
+        key=lambda x: (
+            x[1]["hard"],
+            x[1]["wp"],
+            x[1]["total"]
+        ),
+        reverse=True
+    )
+
+    print(
+        f"{'IP':39} "
+        f"{'REQ':>6} "
+        f"{'SCAN':>6} "
+        f"{'WP':>5} "
+        f"{'4XX':>6}  "
+        f"{'ACTION':18} "
+        f"REASON"
+    )
+
+    print("-" * 110)
+
+    for (
+        ip,
+        s,
+        reason
+    ) in candidates:
+
+        if block_mode:
+
+            changed, action = (
+                firewall_block(
+                    ip,
+                    reason
+                )
+            )
+
+        else:
+
+            action = "WOULD-BLOCK"
+
+        print(
+            f"{ip[:39]:39} "
+            f"{s['total']:6} "
+            f"{s['hard']:6} "
+            f"{s['wp']:5} "
+            f"{s['4xx']:6}  "
+            f"{action:18} "
+            f"{reason}"
+        )
+
+
+# ============================================================
+# FOOTER
+# ============================================================
+
+print()
+print("=" * 88)
+
+if rows or fcrows:
+
+    print(
+        "⚠ Exista activitate "
+        "care merita verificata."
+    )
+
+else:
+
+    print(
+        "✓ Nu apar semne evidente "
+        "de atac / saturare FastCGI."
+    )
+
+print("=" * 88)
+print()
