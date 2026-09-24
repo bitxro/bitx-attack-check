@@ -65,7 +65,7 @@ cat > "${TIMER_PATH}" <<'EOF'
 Description=Run BITX Attack Check every 10 minutes
 
 [Timer]
-OnBootSec=5min
+OnActiveSec=10min
 OnUnitActiveSec=10min
 AccuracySec=1min
 Persistent=true
