@@ -60,11 +60,23 @@ IGNORE_IP=192.0.2.10|External monitoring
 
 ## Utilizare
 
+Porneste meniul interactiv:
+
 ```bash
-/opt/bitx-attack-check/bitx-attack-check 60 --dry-run
-/opt/bitx-attack-check/bitx-attack-check 15 --block
-/opt/bitx-attack-check/bitx-attack-check --blocked
-/opt/bitx-attack-check/bitx-attack-check --unblock IP
+bitx-attack-check
+```
+
+Meniul permite analiza rapida, analiza cu auto-block, analiza unui domeniu, afisarea si deblocarea IP-urilor, administrarea whitelist-ului, verificarea timerului si afisarea logurilor systemd.
+
+Comenzile directe raman disponibile pentru automatizare si administrare:
+
+```bash
+bitx-attack-check 60 --dry-run
+bitx-attack-check 15 --block
+bitx-attack-check --blocked
+bitx-attack-check --unblock IP
+bitx-attack-check --whitelist
+bitx-attack-check -h
 ```
 
 ## Systemd
