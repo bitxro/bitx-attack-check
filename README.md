@@ -21,6 +21,8 @@ Unitatile systemd sunt instalate in `/etc/systemd/system/`.
 Cloneaza repository-ul, apoi:
 
 ```bash
+cd /root
+git clone https://github.com/bitxro/bitx-attack-check.git
 cd bitx-attack-check
 chmod +x install.sh
 sudo ./install.sh
