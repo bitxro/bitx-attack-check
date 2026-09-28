@@ -696,6 +696,7 @@ def show_help():
 BITX Attack Check
 
 Usage:
+  bitx-attack-check                         Meniu interactiv
   bitx-attack-check [minute] [domeniu] [--dry-run|--block]
   bitx-attack-check --blocked
   bitx-attack-check --unblock IP
@@ -742,6 +743,234 @@ def show_whitelist():
     print()
     print(f"Active: {len(IGNORE_IPS)}")
     print()
+
+
+
+def restart_with_args(new_args):
+    os.execv(
+        sys.executable,
+        [sys.executable, os.path.realpath(__file__)] + new_args
+    )
+
+
+def prompt_minutes(default=15):
+    value = input(f"Minute [{default}]: ").strip()
+
+    if not value:
+        return default
+
+    try:
+        minutes = int(value)
+        if minutes <= 0:
+            raise ValueError
+        return minutes
+    except ValueError:
+        print("Valoare invalida. Folosesc valoarea implicita.")
+        return default
+
+
+def add_whitelist_ip():
+    ip = input("IP de adaugat: ").strip()
+
+    if not valid_ip(ip):
+        print("IP invalid.")
+        input("Enter pentru continuare...")
+        return
+
+    if ip in IGNORE_IPS:
+        print("IP-ul este deja in whitelist.")
+        input("Enter pentru continuare...")
+        return
+
+    description = input("Descriere: ").strip() or "-"
+
+    os.makedirs(APP_DIR, exist_ok=True)
+
+    needs_newline = False
+    try:
+        with open(CONFIG_FILE, "rb") as fh:
+            data = fh.read()
+            needs_newline = bool(data and not data.endswith(b"\n"))
+    except FileNotFoundError:
+        pass
+
+    with open(CONFIG_FILE, "a") as fh:
+        if needs_newline:
+            fh.write("\n")
+        fh.write(f"IGNORE_IP={ip}|{description}\n")
+
+    print(f"Adaugat: {ip} | {description}")
+    input("Enter pentru continuare...")
+
+
+def remove_whitelist_ip():
+    ip = input("IP de eliminat: ").strip()
+
+    if not valid_ip(ip):
+        print("IP invalid.")
+        input("Enter pentru continuare...")
+        return
+
+    try:
+        with open(CONFIG_FILE, "r") as fh:
+            lines = fh.readlines()
+    except FileNotFoundError:
+        print("Fisierul de configurare nu exista.")
+        input("Enter pentru continuare...")
+        return
+
+    new_lines = []
+    removed = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        if stripped.startswith("IGNORE_IP="):
+            value = stripped.split("=", 1)[1]
+            entry_ip = value.partition("|")[0].strip()
+
+            if entry_ip == ip:
+                removed = True
+                continue
+
+        new_lines.append(line)
+
+    if not removed:
+        print("IP-ul nu exista ca intrare IGNORE_IP in config.")
+        input("Enter pentru continuare...")
+        return
+
+    tmp = CONFIG_FILE + ".tmp"
+
+    with open(tmp, "w") as fh:
+        fh.writelines(new_lines)
+
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, CONFIG_FILE)
+
+    print(f"Eliminat din whitelist: {ip}")
+    input("Enter pentru continuare...")
+
+
+def whitelist_menu():
+    while True:
+        os.system("clear")
+        print("=" * 60)
+        print(" BITX ATTACK CHECK - WHITELIST")
+        print("=" * 60)
+        print()
+        print("  1) Afiseaza whitelist")
+        print("  2) Adauga IP")
+        print("  3) Sterge IP")
+        print()
+        print("  0) Inapoi")
+        print()
+
+        choice = input("Selectie: ").strip()
+
+        if choice == "1":
+            restart_with_args(["--whitelist"])
+        elif choice == "2":
+            add_whitelist_ip()
+        elif choice == "3":
+            remove_whitelist_ip()
+        elif choice == "0":
+            return
+        else:
+            print("Optiune invalida.")
+            input("Enter pentru continuare...")
+
+
+def interactive_menu():
+    while True:
+        os.system("clear")
+        print("=" * 60)
+        print(" BITX ATTACK CHECK")
+        print("=" * 60)
+        print()
+        print("  1) Analiza rapida - ultimele 15 minute")
+        print("  2) Analiza - ultimele 60 minute")
+        print("  3) Analiza cu AUTO-BLOCK")
+        print("  4) Analiza unui domeniu")
+        print()
+        print("  5) IP-uri blocate")
+        print("  6) Deblocheaza un IP")
+        print("  7) Whitelist")
+        print()
+        print("  8) Status timer")
+        print("  9) Ultimele loguri systemd")
+        print()
+        print("  0) Iesire")
+        print()
+
+        choice = input("Selectie: ").strip()
+
+        if choice == "1":
+            restart_with_args(["15", "--dry-run"])
+
+        elif choice == "2":
+            restart_with_args(["60", "--dry-run"])
+
+        elif choice == "3":
+            minutes = prompt_minutes(15)
+            restart_with_args([str(minutes), "--block"])
+
+        elif choice == "4":
+            domain = input("Domeniu: ").strip()
+
+            if not domain:
+                print("Domeniul nu poate fi gol.")
+                input("Enter pentru continuare...")
+                continue
+
+            minutes = prompt_minutes(60)
+            restart_with_args([str(minutes), domain, "--dry-run"])
+
+        elif choice == "5":
+            restart_with_args(["--blocked"])
+
+        elif choice == "6":
+            ip = input("IP de deblocat: ").strip()
+
+            if not valid_ip(ip):
+                print("IP invalid.")
+                input("Enter pentru continuare...")
+                continue
+
+            restart_with_args(["--unblock", ip])
+
+        elif choice == "7":
+            whitelist_menu()
+
+        elif choice == "8":
+            subprocess.run(
+                ["systemctl", "status", "bitx-attack-check.timer", "--no-pager"]
+            )
+            input("\nEnter pentru continuare...")
+
+        elif choice == "9":
+            subprocess.run(
+                [
+                    "journalctl",
+                    "-u", "bitx-attack-check.service",
+                    "-n", "100",
+                    "--no-pager"
+                ]
+            )
+            input("\nEnter pentru continuare...")
+
+        elif choice == "0":
+            print("La revedere.")
+            sys.exit(0)
+
+        else:
+            print("Optiune invalida.")
+            input("Enter pentru continuare...")
+
+
+if not args:
+    interactive_menu()
+    sys.exit(0)
 
 
 if "-h" in args or "--help" in args:
