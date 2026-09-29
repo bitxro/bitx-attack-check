@@ -44,15 +44,13 @@ Fisierul activ este:
 /opt/bitx-attack-check/bitx-attack-check.conf
 ```
 
-Porneste de la `bitx-attack-check.conf.example`. Adauga IP-urile de incredere in `IGNORE_IPS`.
+Porneste de la `bitx-attack-check.conf.example`. Repository-ul nu contine IP-uri in whitelist si nu contine credentiale Telegram. Acestea se configureaza local din meniul interactiv.
 
 ## Whitelist / IP-uri permise
 
 Format recomandat:
 
 ```ini
-IGNORE_IP=127.0.0.1|localhost
-IGNORE_IP=::1|localhost IPv6
 IGNORE_IP=192.0.2.10|External monitoring
 ```
 
@@ -66,7 +64,13 @@ Porneste meniul interactiv:
 bitx-attack-check
 ```
 
-Meniul permite analiza rapida, analiza cu auto-block, analiza unui domeniu, afisarea si deblocarea IP-urilor, administrarea whitelist-ului, verificarea timerului si afisarea logurilor systemd.
+Meniul permite analiza rapida, analiza cu auto-block, analiza unui domeniu, afisarea si deblocarea IP-urilor, administrarea whitelist-ului, configurarea notificarilor Telegram, verificarea timerului si afisarea logurilor systemd.
+
+## Telegram
+
+Din meniul interactiv, optiunea `Telegram` permite configurarea locala a Bot Token si Chat ID, activarea/dezactivarea notificarilor si trimiterea unui mesaj de test. Credentialele sunt salvate numai in fisierul local `/opt/bitx-attack-check/bitx-attack-check.conf`, care are permisiuni `0600` si nu este inclus in repository.
+
+Cand modul `--block` adauga cu succes un IP nou in firewalld, scriptul trimite o notificare cu serverul, IP-ul, durata blocarii si motivul. Nu trimite notificari pentru dry-run sau pentru IP-uri deja blocate.
 
 Comenzile directe raman disponibile pentru automatizare si administrare:
 
