@@ -1,5 +1,5 @@
 # BITX Attack Check configuration example
-# Copy to /etc/bitx-attack-check.conf and adjust only what you need.
+# Local configuration is installed as /opt/bitx-attack-check/bitx-attack-check.conf
 
 LOGDIR=/var/log/virtualmin
 FIREWALL_ZONE=public
@@ -7,15 +7,21 @@ FIREWALL_ZONE=public
 BLOCK_TIME=24h
 BLOCK_HOURS=24
 
-# Recommended: one trusted IP per line, optionally followed by a description.
-IGNORE_IP=127.0.0.1|localhost
-IGNORE_IP=::1|localhost IPv6
+# Whitelist is intentionally empty in the repository.
+# Add trusted IPs locally from the interactive menu.
+#
+# Recommended format:
 # IGNORE_IP=192.0.2.10|External monitoring
-
+#
 # Legacy format remains supported:
-# IGNORE_IPS=127.0.0.1,::1
+# IGNORE_IPS=192.0.2.10,198.51.100.20
 
 SCAN_LIMIT=5
 SCAN_WITH_4XX_LIMIT=2
 SCAN_4XX_MIN=20
 WP_LIMIT=20
+
+# Telegram credentials are local secrets. Configure them from the menu.
+TELEGRAM_ENABLED=no
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
