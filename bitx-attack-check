@@ -1021,8 +1021,8 @@ def telegram_menu():
                 print("Configureaza mai intai tokenul si Chat ID.")
             else:
                 ok, msg = telegram_send(
-                    "BITX Attack Check\\n"
-                    f"Server: {socket.gethostname()}\\n"
+                    "BITX Attack Check\n"
+                    f"Server: {socket.gethostname()}\n"
                     "Telegram functioneaza.",
                     force=True,
                     token=token,
