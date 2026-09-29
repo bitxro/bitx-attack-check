@@ -356,8 +356,7 @@ def telegram_send(message, force=False, token=None, chat_id=None):
 def telegram_block_notification(ip, reason):
     host = socket.gethostname()
     message = (
-        "🛡️ <b>BITX Attack Check</b>\n\n"
-        f"🖥️ <b>Server:</b> <code>{host}</code>\n"
+        f"🛡️ <b>BITX Attack Check — {host}</b>\n\n"
         f"🚫 <b>IP blocat:</b> <code>{ip}</code>\n"
         f"⏱️ <b>Durata:</b> <code>{BLOCK_TIME}</code>\n"
         f"⚠️ <b>Motiv:</b> <code>{reason}</code>\n\n"
@@ -1023,8 +1022,7 @@ def telegram_menu():
                 print("Configureaza mai intai tokenul si Chat ID.")
             else:
                 ok, msg = telegram_send(
-                    "🛡️ <b>BITX Attack Check</b>\n\n"
-                    f"🖥️ <b>Server:</b> <code>{socket.gethostname()}</code>\n"
+                    f"🛡️ <b>BITX Attack Check — {socket.gethostname()}</b>\n\n"
                     "🟢 <b>Telegram functioneaza</b>",
                     force=True,
                     token=token,
