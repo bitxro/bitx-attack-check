@@ -359,7 +359,7 @@ def telegram_block_notification(ip, reason):
         f"🛡️ <b>Attack - {host}</b>\n"
         f"🚫 <b>IP blocat:</b> <code>{ip}</code>\n"
         f"⏱️ <b>Durata:</b> <code>{BLOCK_TIME}</code>\n"
-        f"⚠️ <b>Motiv:</b> <code>{reason}</code>\n\n"
+        f"⚠️ <b>Motiv:</b> <code>{reason}</code>\n"
         "🔴 <b>AUTO-BLOCK</b>"
     )
     return telegram_send(message)
