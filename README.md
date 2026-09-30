@@ -57,6 +57,17 @@ IGNORE_IP=192.0.2.10|External monitoring
 
 `IGNORE_IP=` poate fi repetat. Textul dupa `|` este descrierea IP-ului. Formatul vechi `IGNORE_IPS=ip1,ip2` ramane suportat pentru compatibilitate.
 
+## Export / import whitelist
+
+Din meniul `Whitelist` poti exporta lista intr-un fisier JSON si o poti importa pe alt server. Importul face merge cu lista locala: nu sterge intrarile existente si nu adauga duplicate. Exportul contine numai IP-urile si descrierile din whitelist; tokenul Telegram, Chat ID-ul si celelalte setari locale nu sunt incluse.
+
+Comenzi directe:
+
+```bash
+bitx-attack-check --export-whitelist /root/bitx-whitelist-export.json
+bitx-attack-check --import-whitelist /root/bitx-whitelist-export.json
+```
+
 ## Utilizare
 
 Porneste meniul interactiv:
