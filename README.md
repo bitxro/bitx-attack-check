@@ -11,7 +11,8 @@ Analizeaza logurile Virtualmin, identifica probe/scannere web, probe WordPress, 
 ├── bitx-attack-check
 ├── bitx-attack-check.conf
 └── data/
-    └── blocks.json
+    ├── blocks.json
+    └── history.json
 ```
 
 Unitatile systemd sunt instalate in `/etc/systemd/system/`.
@@ -70,7 +71,11 @@ Meniul permite analiza rapida, analiza cu auto-block, analiza unui domeniu, afis
 
 Din meniul interactiv, optiunea `Telegram` permite configurarea locala a Bot Token si Chat ID, activarea/dezactivarea notificarilor si trimiterea unui mesaj de test. Credentialele sunt salvate numai in fisierul local `/opt/bitx-attack-check/bitx-attack-check.conf`, care are permisiuni `0600` si nu este inclus in repository.
 
-Cand modul `--block` adauga cu succes un IP nou in firewalld, scriptul trimite o notificare cu serverul, IP-ul, durata blocarii si motivul. Nu trimite notificari pentru dry-run sau pentru IP-uri deja blocate.
+Cand modul `--block` adauga cu succes un IP nou in firewalld, scriptul trimite o notificare cu serverul, IP-ul, durata blocarii, numarul recidivei si motivul. Nu trimite notificari pentru dry-run sau pentru IP-uri deja blocate.
+
+## Ban progresiv
+
+IP-urile care revin dupa expirarea unei blocari primesc automat perioade mai lungi: prima blocare `24h`, a doua `7 zile`, a treia `30 zile`, iar de la a patra `90 zile`. Istoricul recidivelor este pastrat separat in `data/history.json`, astfel incat expirarea sau deblocarea unui IP nu sterge istoricul. Daca IP-ul nu mai este blocat timp de 90 de zile, recidiva se reseteaza si urmatoarea blocare porneste din nou de la 24h.
 
 Comenzile directe raman disponibile pentru automatizare si administrare:
 
