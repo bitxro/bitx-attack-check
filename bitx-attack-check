@@ -2153,3 +2153,33 @@ else:
             f"{ip[:39]:39} "
             f"{s['total']:6} "
             f"{s['hard']:6} "
+            f"{s['wp']:5} "
+            f"{s['4xx']:6}  "
+            f"{action:18} "
+            f"{reason}"
+        )
+
+
+# ============================================================
+# FOOTER
+# ============================================================
+
+print()
+print("=" * 88)
+
+if rows or fcrows:
+
+    print(
+        "⚠ Exista activitate "
+        "care merita verificata."
+    )
+
+else:
+
+    print(
+        "✓ Nu apar semne evidente "
+        "de atac / saturare FastCGI."
+    )
+
+print("=" * 88)
+print()
