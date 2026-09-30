@@ -21,6 +21,14 @@ APP_DIR = os.path.dirname(os.path.realpath(__file__))
 CONFIG_FILE = os.path.join(APP_DIR, "bitx-attack-check.conf")
 STATE_DIR = os.path.join(APP_DIR, "data")
 STATE_FILE = os.path.join(STATE_DIR, "blocks.json")
+HISTORY_FILE = os.path.join(STATE_DIR, "history.json")
+HISTORY_RESET_DAYS = 90
+BAN_LEVELS = (
+    (24, "24h"),
+    (24 * 7, "7 zile"),
+    (24 * 30, "30 zile"),
+    (24 * 90, "90 zile"),
+)
 
 
 # ============================================================
@@ -353,12 +361,13 @@ def telegram_send(message, force=False, token=None, chat_id=None):
         return False, str(e)
 
 
-def telegram_block_notification(ip, reason):
+def telegram_block_notification(ip, reason, duration_label, recurrence):
     host = socket.gethostname()
     message = (
         f"🛡️ <b>Attack - {host}</b>\n"
         f"🚫 <b>IP blocat:</b> <code>{ip}</code>\n"
-        f"⏱️ <b>Durata:</b> <code>{BLOCK_TIME}</code>\n"
+        f"⏱️ <b>Durata:</b> <code>{duration_label}</code>\n"
+        f"🔁 <b>Recidiva:</b> <code>{recurrence}</code>\n"
         f"⚠️ <b>Motiv:</b> <code>{reason}</code>\n"
         "🔴 <b>AUTO-BLOCK</b>"
     )
@@ -397,8 +406,7 @@ def save_state(state):
 
     os.makedirs(
         STATE_DIR,
-        mode=0o700,
-        exist_ok=True
+        mode=0o700,        exist_ok=True
     )
 
     tmp = STATE_FILE + ".tmp"
@@ -426,29 +434,70 @@ def save_state(state):
     )
 
 
-def register_block(ip, reason):
+def load_history():
+    try:
+        with open(HISTORY_FILE, "r") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            return data
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return {}
+
+
+def save_history(history):
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    tmp = HISTORY_FILE + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(history, fh, indent=2, sort_keys=True)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, HISTORY_FILE)
+
+
+def next_ban(ip):
+    history = load_history()
+    now = datetime.now()
+    info = history.get(ip, {})
+    count = 0
+
+    try:
+        last_blocked = datetime.fromisoformat(info.get("last_blocked", ""))
+        if now - last_blocked <= timedelta(days=HISTORY_RESET_DAYS):
+            count = int(info.get("count", 0))
+    except (ValueError, TypeError):
+        pass
+
+    recurrence = count + 1
+    level = min(recurrence - 1, len(BAN_LEVELS) - 1)
+    hours, label = BAN_LEVELS[level]
+    return hours, label, recurrence
+
+
+def register_history_block(ip, recurrence):
+    history = load_history()
+    history[ip] = {
+        "count": recurrence,
+        "last_blocked": datetime.now().isoformat(timespec="seconds"),
+    }
+    save_history(history)
+
+
+def register_block(ip, reason, block_hours, duration_label, recurrence):
 
     state = load_state()
 
     blocked = datetime.now()
 
     expires = blocked + timedelta(
-        hours=BLOCK_HOURS
+        hours=block_hours
     )
 
     state[ip] = {
-        "blocked":
-            blocked.isoformat(
-                timespec="seconds"
-            ),
-
-        "expires":
-            expires.isoformat(
-                timespec="seconds"
-            ),
-
-        "reason":
-            reason,
+        "blocked": blocked.isoformat(timespec="seconds"),
+        "expires": expires.isoformat(timespec="seconds"),
+        "reason": reason,
+        "duration": duration_label,
+        "recurrence": recurrence,
     }
 
     save_state(state)
@@ -552,23 +601,32 @@ def firewall_block(ip, reason):
     if rc == 0:
         return False, "ALREADY-BLOCKED"
 
+    block_hours, duration_label, recurrence = next_ban(ip)
+    timeout = f"{block_hours}h"
+
     rc, out, err = run_firewall([
         f"--zone={FIREWALL_ZONE}",
         "--add-rich-rule",
         rule,
-        f"--timeout={BLOCK_TIME}"
+        f"--timeout={timeout}"
     ])
 
     if rc == 0:
 
         register_block(
             ip,
-            reason
+            reason,
+            block_hours,
+            duration_label,
+            recurrence
         )
+        register_history_block(ip, recurrence)
 
         telegram_send_ok, telegram_send_msg = telegram_block_notification(
             ip,
-            reason
+            reason,
+            duration_label,
+            recurrence
         )
 
         if TELEGRAM_ENABLED and not telegram_send_ok:
@@ -580,7 +638,7 @@ def firewall_block(ip, reason):
 
         return (
             True,
-            f"BLOCKED-{BLOCK_TIME}"
+            f"BLOCKED-{duration_label}"
         )
 
     return (
@@ -796,7 +854,6 @@ Config:
 State:
   """ + STATE_FILE + """
 """)
-
 
 def show_whitelist():
 
@@ -1197,7 +1254,6 @@ if "--unblock" in args:
         ValueError,
         IndexError
     ):
-
         print(
             "Usage: "
             "bitx-attack-check "
@@ -1548,8 +1604,7 @@ else:
 if block_mode:
 
     print(
-        f" Auto-ban : ACTIV "
-        f"({BLOCK_TIME})"
+        " Auto-ban : ACTIV (progresiv: 24h -> 7d -> 30d -> 90d)"
     )
 
 elif dry_run:
@@ -1598,7 +1653,6 @@ for (
 
     if s["wp"] >= 10:
         flags.append("WP-PROBE")
-
     if s["total"] >= 100:
         flags.append("FLOOD")
 
@@ -1998,33 +2052,3 @@ else:
             f"{ip[:39]:39} "
             f"{s['total']:6} "
             f"{s['hard']:6} "
-            f"{s['wp']:5} "
-            f"{s['4xx']:6}  "
-            f"{action:18} "
-            f"{reason}"
-        )
-
-
-# ============================================================
-# FOOTER
-# ============================================================
-
-print()
-print("=" * 88)
-
-if rows or fcrows:
-
-    print(
-        "⚠ Exista activitate "
-        "care merita verificata."
-    )
-
-else:
-
-    print(
-        "✓ Nu apar semne evidente "
-        "de atac / saturare FastCGI."
-    )
-
-print("=" * 88)
-print()
