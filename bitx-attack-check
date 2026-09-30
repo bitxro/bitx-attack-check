@@ -829,6 +829,8 @@ Usage:
   bitx-attack-check --blocked
   bitx-attack-check --unblock IP
   bitx-attack-check --whitelist
+  bitx-attack-check --export-whitelist FISIER
+  bitx-attack-check --import-whitelist FISIER
   bitx-attack-check -h | --help
 
 Commands:
@@ -836,6 +838,8 @@ Commands:
   --blocked               Afiseaza IP-urile blocate activ
   --unblock IP            Elimina blocarea pentru IP
   --whitelist             Afiseaza IP-urile permise si descrierile lor
+  --export-whitelist FILE Exporta whitelist-ul in JSON
+  --import-whitelist FILE Importa prin merge, fara duplicate
   --dry-run               Analizeaza fara sa blocheze
   --block                 Analizeaza si aplica autoblock
 
@@ -980,6 +984,59 @@ def remove_whitelist_ip():
 
 
 
+
+def export_whitelist(path):
+    entries = [{"ip": ip, "description": IGNORE_IP_DESCRIPTIONS.get(ip, "-")} for ip in sorted(IGNORE_IPS)]
+    payload = {"format": "bitx-attack-check-whitelist", "version": 1, "exported_from": socket.gethostname(), "entries": entries}
+    with open(path, "w") as fh:
+        json.dump(payload, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.chmod(path, 0o600)
+    return len(entries)
+
+
+def import_whitelist(path):
+    try:
+        with open(path, "r") as fh:
+            payload = json.load(fh)
+    except (OSError, json.JSONDecodeError) as e:
+        return False, 0, 0, 0, str(e)
+    if not isinstance(payload, dict) or payload.get("format") != "bitx-attack-check-whitelist" or not isinstance(payload.get("entries"), list):
+        return False, 0, 0, 0, "format de export invalid"
+    existing = set(IGNORE_IPS)
+    additions = []
+    duplicates = invalid = 0
+    for item in payload["entries"]:
+        if not isinstance(item, dict):
+            invalid += 1
+            continue
+        ip = str(item.get("ip", "")).strip()
+        description = str(item.get("description", "-")).strip() or "-"
+        if not valid_ip(ip):
+            invalid += 1
+        elif ip in existing:
+            duplicates += 1
+        else:
+            additions.append((ip, description))
+            existing.add(ip)
+    if additions:
+        needs_newline = False
+        try:
+            with open(CONFIG_FILE, "rb") as fh:
+                data = fh.read()
+                needs_newline = bool(data and not data.endswith(b"\n"))
+        except FileNotFoundError:
+            pass
+        with open(CONFIG_FILE, "a") as fh:
+            if needs_newline:
+                fh.write("\n")
+            for ip, description in additions:
+                fh.write(f"IGNORE_IP={ip}|{description}\n")
+        os.chmod(CONFIG_FILE, 0o600)
+    return True, len(additions), duplicates, invalid, ""
+
+
+
 def update_config_values(updates):
     try:
         with open(CONFIG_FILE, "r") as fh:
@@ -1106,6 +1163,8 @@ def whitelist_menu():
         print("  1) Afiseaza whitelist")
         print("  2) Adauga IP")
         print("  3) Sterge IP")
+        print("  4) Exporta whitelist")
+        print("  5) Importa whitelist")
         print()
         print("  0) Inapoi")
         print()
@@ -1118,6 +1177,18 @@ def whitelist_menu():
             add_whitelist_ip()
         elif choice == "3":
             remove_whitelist_ip()
+        elif choice == "4":
+            path = input("Fisier export [/root/bitx-whitelist-export.json]: ").strip() or "/root/bitx-whitelist-export.json"
+            try:
+                print(f"Exportat: {export_whitelist(path)} IP-uri in {path}")
+            except OSError as e:
+                print(f"Eroare export: {e}")
+            input("Enter pentru continuare...")
+        elif choice == "5":
+            path = input("Fisier import [/root/bitx-whitelist-export.json]: ").strip() or "/root/bitx-whitelist-export.json"
+            ok, added, duplicates, invalid, error = import_whitelist(path)
+            print(f"Import finalizat: adaugate={added}, existente={duplicates}, invalide={invalid}" if ok else f"Eroare import: {error}")
+            input("Enter pentru continuare...")
         elif choice == "0":
             return
         else:
@@ -1230,6 +1301,36 @@ if "-h" in args or "--help" in args:
 if "--whitelist" in args:
 
     show_whitelist()
+    sys.exit(0)
+
+
+
+if "--export-whitelist" in args:
+    try:
+        idx = args.index("--export-whitelist")
+        path = args[idx + 1]
+        print(f"Exportat: {export_whitelist(path)} IP-uri in {path}")
+        sys.exit(0)
+    except (ValueError, IndexError):
+        print("Usage: bitx-attack-check --export-whitelist FISIER")
+        sys.exit(1)
+    except OSError as e:
+        print(f"Eroare export: {e}")
+        sys.exit(1)
+
+
+if "--import-whitelist" in args:
+    try:
+        idx = args.index("--import-whitelist")
+        path = args[idx + 1]
+    except (ValueError, IndexError):
+        print("Usage: bitx-attack-check --import-whitelist FISIER")
+        sys.exit(1)
+    ok, added, duplicates, invalid, error = import_whitelist(path)
+    if not ok:
+        print(f"Eroare import: {error}")
+        sys.exit(1)
+    print(f"Import finalizat: adaugate={added}, existente={duplicates}, invalide={invalid}")
     sys.exit(0)
 
 
