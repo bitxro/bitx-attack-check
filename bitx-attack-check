@@ -11,6 +11,10 @@ import ipaddress
 import socket
 import urllib.parse
 import urllib.request
+import time
+import tempfile
+import shutil
+import fcntl
 
 from datetime import datetime, timedelta
 from collections import defaultdict, Counter
@@ -582,6 +586,176 @@ def firewall_rule(ip):
     )
 
 
+CRAWLER_FEEDS = {
+    "GOOGLE": "https://developers.google.com/static/crawling/ipranges/common-crawlers.json",
+    "BING": "https://www.bing.com/toolbox/bingbot.json",
+}
+_crawler_ranges = None
+_crawler_results = {}
+
+
+def parse_crawler_ranges(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("format lista invalid")
+    prefixes = payload["prefixes"]
+    if not isinstance(prefixes, list) or not prefixes:
+        raise ValueError("lista IP goala")
+    ranges = []
+    for item in prefixes:
+        if not isinstance(item, dict):
+            raise ValueError("interval invalid")
+        value = item.get("ipv4Prefix") or item.get("ipv6Prefix")
+        network = ipaddress.ip_network(value, strict=True)
+        if network.prefixlen < (8 if network.version == 4 else 20):
+            raise ValueError("interval IP prea larg")
+        ranges.append(network)
+    return ranges
+
+
+def crawler_ranges():
+    global _crawler_ranges
+    if _crawler_ranges is not None:
+        return _crawler_ranges
+    _crawler_ranges = {}
+    for provider, url in CRAWLER_FEEDS.items():
+        cache_path = os.path.join(STATE_DIR, "crawler-" + provider.lower() + ".json")
+        cached = None
+        age = float("inf")
+        try:
+            with open(cache_path) as fh:
+                cached = json.load(fh)
+            age = time.time() - float(cached["fetched_at"])
+            ranges = parse_crawler_ranges(cached["payload"])
+            if not 0 <= age <= 7 * 86400:
+                ranges = []
+        except (OSError, ValueError, KeyError, TypeError):
+            ranges = []
+        if age >= 86400 or not ranges:
+            try:
+                with urllib.request.urlopen(url, timeout=8) as response:
+                    data = response.read(2 * 1024 * 1024 + 1)
+                if len(data) > 2 * 1024 * 1024:
+                    raise ValueError("lista prea mare")
+                payload = json.loads(data)
+                ranges = parse_crawler_ranges(payload)
+                try:
+                    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+                    fd, tmp = tempfile.mkstemp(dir=STATE_DIR)
+                    try:
+                        with os.fdopen(fd, "w") as fh:
+                            json.dump({"fetched_at": time.time(), "payload": payload}, fh)
+                        os.replace(tmp, cache_path)
+                    finally:
+                        if os.path.exists(tmp):
+                            os.unlink(tmp)
+                except OSError as error:
+                    print(f"[WARN] Cache crawler {provider}: {error}", file=sys.stderr)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                print(f"[WARN] Lista crawler {provider} indisponibila: {error}", file=sys.stderr)
+        _crawler_ranges[provider] = ranges
+    return _crawler_ranges
+
+
+def crawler_dns(ip):
+    # Run DNS in a child process so resolver delays have a hard deadline.
+    code = '''import socket, sys, json
+try:
+    host = socket.gethostbyaddr(sys.argv[1])[0].lower().rstrip('.')
+    provider = 'GOOGLE' if host.endswith('.googlebot.com') else 'BING' if host.endswith('.search.msn.com') else ''
+    if provider:
+        addresses = [x[4][0] for x in socket.getaddrinfo(host, None)]
+        print(json.dumps([provider, addresses]))
+    else:
+        print(json.dumps(['', []]))
+except (socket.herror, socket.gaierror, OSError):
+    sys.exit(2)
+'''
+    try:
+        result = subprocess.run([sys.executable, "-c", code, ip],
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode:
+            return "CHECK-FAILED"
+        provider, addresses = json.loads(result.stdout)
+        if provider and ipaddress.ip_address(ip) in {ipaddress.ip_address(x) for x in addresses}:
+            return "CRAWLER-" + provider
+        return ""
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return "CHECK-FAILED"
+
+
+def crawler_protection(ip):
+    if ip in _crawler_results:
+        return _crawler_results[ip]
+    address = ipaddress.ip_address(ip)
+    ranges = crawler_ranges()
+    verdict = ""
+    for provider, networks in ranges.items():
+        if any(address in network for network in networks):
+            verdict = "CRAWLER-" + provider
+            break
+    if not verdict:
+        # DNS also catches recently added crawler IPs absent from yesterday's feed.
+        verdict = crawler_dns(ip)
+        if verdict == "CHECK-FAILED" and all(ranges.values()):
+            verdict = ""  # Both official lists were available and did not match.
+    _crawler_results[ip] = verdict
+    return verdict
+
+
+def deploy_update():
+    if os.geteuid() != 0:
+        print("Update-ul necesita root.", file=sys.stderr)
+        return False
+    target = os.path.realpath(__file__)
+    try:
+        # Only code is replaced. Local config/state are never copied from Git.
+        with open(os.path.join(APP_DIR, ".update.lock"), "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with tempfile.TemporaryDirectory(prefix="bitx-update-") as staging:
+                checkout = os.path.join(staging, "repo")
+                env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+                print("Preiau ultima versiune din GitHub...", flush=True)
+                subprocess.run(["git", "clone", "--depth", "1", "--branch", "main",
+                                "https://github.com/bitxro/bitx-attack-check.git", checkout],
+                               check=True, timeout=120, env=env)
+                source = os.path.join(checkout, "bitx-attack-check")
+                subprocess.run([sys.executable, "-m", "py_compile", source], check=True, timeout=20)
+                subprocess.run([sys.executable, source, "--help"], check=True,
+                               stdout=subprocess.DEVNULL, timeout=20)
+                revision = subprocess.check_output(["git", "-C", checkout, "rev-parse", "--short", "HEAD"], text=True).strip()
+                with open(source, "rb") as fh:
+                    new_code = fh.read()
+                with open(target, "rb") as fh:
+                    if fh.read() == new_code:
+                        print(f"Deja la zi: {revision}")
+                        return True
+                fd, replacement = tempfile.mkstemp(prefix=".bitx-update-", dir=APP_DIR)
+                backup = target + ".previous"
+                try:
+                    with os.fdopen(fd, "wb") as fh:
+                        fh.write(new_code)
+                        fh.flush()
+                        os.fsync(fh.fileno())
+                    os.chmod(replacement, 0o755)
+                    shutil.copy2(target, backup)
+                    os.replace(replacement, target)
+                    try:
+                        subprocess.run([sys.executable, target, "--help"], check=True,
+                                       stdout=subprocess.DEVNULL, timeout=20)
+                    except Exception:
+                        os.replace(backup, target)
+                        raise
+                finally:
+                    if os.path.exists(replacement):
+                        os.unlink(replacement)
+                print(f"Update instalat: {revision}. Configuratia si datele locale sunt pastrate.")
+                print(f"Versiunea precedenta: {backup}")
+                return True
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"Update esuat: {error}", file=sys.stderr)
+        return False
+
+
 def firewall_block(ip, reason):
 
     if ip in IGNORE_IPS:
@@ -589,6 +763,10 @@ def firewall_block(ip, reason):
 
     if not valid_ip(ip):
         return False, "INVALID-IP"
+
+    protection = crawler_protection(ip)
+    if protection:
+        return False, protection
 
     rule = firewall_rule(ip)
 
@@ -831,6 +1009,8 @@ Usage:
   bitx-attack-check --whitelist
   bitx-attack-check --export-whitelist FISIER
   bitx-attack-check --import-whitelist FISIER
+  bitx-attack-check --update
+  bitx-attack-check --check-crawler IP
   bitx-attack-check -h | --help
 
 Commands:
@@ -842,6 +1022,8 @@ Commands:
   --import-whitelist FILE Importa prin merge, fara duplicate
   --dry-run               Analizeaza fara sa blocheze
   --block                 Analizeaza si aplica autoblock
+  --update                Update din GitHub; pastreaza configuratia si datele
+  --check-crawler IP      Verifica protectia Google/Bing pentru un IP
 
 Examples:
   bitx-attack-check 15 --dry-run
@@ -1215,6 +1397,8 @@ def interactive_menu():
         print("  8) Telegram")
         print("  9) Status timer")
         print(" 10) Ultimele loguri systemd")
+        print(" 11) Update din GitHub")
+        print(" 12) Verifica IP crawler Google/Bing")
         print()
         print("  0) Iesire")
         print()
@@ -1278,6 +1462,19 @@ def interactive_menu():
             )
             input("\nEnter pentru continuare...")
 
+        elif choice == "11":
+            if deploy_update():
+                restart_with_args([])
+            input("Enter pentru continuare...")
+
+        elif choice == "12":
+            ip = input("IP de verificat: ").strip()
+            if valid_ip(ip):
+                print(crawler_protection(ip) or "Nu este crawler Google/Bing verificat.")
+            else:
+                print("IP invalid.")
+            input("Enter pentru continuare...")
+
         elif choice == "0":
             print("La revedere.")
             sys.exit(0)
@@ -1286,6 +1483,20 @@ def interactive_menu():
             print("Optiune invalida.")
             input("Enter pentru continuare...")
 
+
+if "--update" in args:
+    sys.exit(0 if deploy_update() else 1)
+
+if "--check-crawler" in args:
+    try:
+        ip = args[args.index("--check-crawler") + 1]
+        if not valid_ip(ip):
+            raise ValueError("IP invalid")
+        print(f"{ip}: {crawler_protection(ip) or 'NOT-VERIFIED'}")
+        sys.exit(0)
+    except (ValueError, IndexError):
+        print("Usage: bitx-attack-check --check-crawler IP", file=sys.stderr)
+        sys.exit(1)
 
 if not args:
     interactive_menu()
@@ -2147,7 +2358,7 @@ else:
 
         else:
 
-            action = "WOULD-BLOCK"
+            action = crawler_protection(ip) or "WOULD-BLOCK"
 
         print(
             f"{ip[:39]:39} "
