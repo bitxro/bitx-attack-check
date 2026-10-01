@@ -37,6 +37,47 @@ Installerul:
 - instaleaza si activeaza timerul systemd;
 - ruleaza un dry-run la final.
 
+## Update simplu, fara modificarea setarilor locale
+
+Dupa instalarea versiunii care include updaterul, ruleaza ca root:
+
+```bash
+bitx-attack-check --update
+```
+
+Sau alege `11) Update din GitHub` din meniu. Updaterul cloneaza temporar ramura main din repository-ul oficial, verifica sintaxa Python si comanda de ajutor, apoi inlocuieste atomic numai executabilul instalat. Configuratia, whitelist-ul, Telegram, blocks.json si history.json nu sunt copiate din Git si raman locale. Este necesar Git si acces HTTPS la GitHub. Nu schimba unitatile systemd.
+
+Executabilul anterior este pastrat ca `bitx-attack-check.previous`. Daca verificarea comenzii de ajutor dupa instalare esueaza, updaterul restaureaza automat executabilul precedent. Aceasta verificare nu garanteaza detectarea tuturor erorilor functionale.
+
+Pentru prima trecere de la o versiune fara updater, pe fiecare server:
+
+```bash
+cd /root/bitx-attack-check-src &&
+git pull --ff-only &&
+python3 -m py_compile bitx-attack-check &&
+install -o root -g root -m 0755 bitx-attack-check /opt/bitx-attack-check/bitx-attack-check &&
+bitx-attack-check --help
+```
+
+## Protectie pentru Googlebot si Bingbot
+
+Protectia este activa automat, inainte de orice blocare si de actualizarea istoricului de recidiva. Foloseste exclusiv listele oficiale de crawlere, nu toate IP-urile Google/Microsoft si nu User-Agent:
+
+- Google: https://developers.google.com/static/crawling/ipranges/common-crawlers.json
+- Bing: https://www.bing.com/toolbox/bingbot.json
+
+Listele sunt preluate la prima verificare a unui candidat, apoi reimprospatate dupa 24h. Cache-ul local din data/ este utilizabil maximum 7 zile daca descarcarea esueaza. Suporta IPv4 si IPv6. Verificarea DNS inversa si directa confirma suplimentar hostname-uri sub googlebot.com sau search.msn.com, inclusiv IP-uri noi care nu apar in cache. DNS are limita de 5 secunde pentru fiecare IP; rezultatele sunt memorate pe durata rularii.
+
+In raport, `CRAWLER-GOOGLE` si `CRAWLER-BING` indica exceptii de la blocare, inclusiv in dry-run. Daca lipseste o lista utilizabila si DNS nu poate confirma sau infirma identitatea, apare `CHECK-FAILED`: banul este amanat pana la o rulare ulterioara, fara schimbarea istoricului. Daca ambele liste sunt disponibile, un IP absent din liste si neconfirmat prin DNS ramane eligibil pentru blocare. Erorile descarcarii sunt afisate si in logurile systemd.
+
+Verificare individuala (sau optiunea 12 din meniu):
+
+```bash
+bitx-attack-check --check-crawler IP
+```
+
+Banurile deja active nu sunt eliminate automat. Verifica IP-ul si foloseste explicit `--unblock IP` daca este un crawler legitim. Site-urile din spatele unui proxy trebuie sa inregistreze IP-ul real al clientului printr-o configuratie de proxy de incredere.
+
 ## Configurare
 
 Fisierul activ este:
