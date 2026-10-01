@@ -21,7 +21,7 @@ from collections import defaultdict, Counter
 from urllib.parse import urlsplit
 
 
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 
 APP_DIR = os.path.dirname(os.path.realpath(__file__))
 CONFIG_FILE = os.path.join(APP_DIR, "bitx-attack-check.conf")
@@ -1069,6 +1069,20 @@ def restart_with_args(new_args):
     )
 
 
+def run_menu_command(new_args):
+    # Keep the menu process alive; the child reloads current local settings.
+    try:
+        result = subprocess.run(
+            [sys.executable, os.path.realpath(__file__)] + new_args
+        )
+        if result.returncode:
+            print(f"Comanda s-a incheiat cu codul {result.returncode}.")
+    except OSError as error:
+        print(f"Comanda nu a putut porni: {error}")
+    while input("\n0) Inapoi (sau Enter): ").strip() not in ("", "0"):
+        print("Selecteaza 0 pentru revenire.")
+
+
 def prompt_minutes(default=15):
     value = input(f"Minute [{default}]: ").strip()
 
@@ -1357,7 +1371,7 @@ def whitelist_menu():
         choice = input("Selectie: ").strip()
 
         if choice == "1":
-            restart_with_args(["--whitelist"])
+            run_menu_command(["--whitelist"])
         elif choice == "2":
             add_whitelist_ip()
         elif choice == "3":
@@ -1425,14 +1439,14 @@ def interactive_menu():
         choice = input("Selectie: ").strip()
 
         if choice == "1":
-            restart_with_args(["15", "--dry-run"])
+            run_menu_command(["15", "--dry-run"])
 
         elif choice == "2":
-            restart_with_args(["60", "--dry-run"])
+            run_menu_command(["60", "--dry-run"])
 
         elif choice == "3":
             minutes = prompt_minutes(15)
-            restart_with_args([str(minutes), "--block"])
+            run_menu_command([str(minutes), "--block"])
 
         elif choice == "4":
             domain = input("Domeniu: ").strip()
@@ -1443,10 +1457,10 @@ def interactive_menu():
                 continue
 
             minutes = prompt_minutes(60)
-            restart_with_args([str(minutes), domain, "--dry-run"])
+            run_menu_command([str(minutes), domain, "--dry-run"])
 
         elif choice == "5":
-            restart_with_args(["--blocked"])
+            run_menu_command(["--blocked"])
 
         elif choice == "6":
             ip = input("IP de deblocat: ").strip()
@@ -1456,7 +1470,7 @@ def interactive_menu():
                 input("Enter pentru continuare...")
                 continue
 
-            restart_with_args(["--unblock", ip])
+            run_menu_command(["--unblock", ip])
 
         elif choice == "7":
             whitelist_menu()
