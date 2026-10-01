@@ -21,7 +21,7 @@ from collections import defaultdict, Counter
 from urllib.parse import urlsplit
 
 
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 
 APP_DIR = os.path.dirname(os.path.realpath(__file__))
 CONFIG_FILE = os.path.join(APP_DIR, "bitx-attack-check.conf")
@@ -1284,7 +1284,7 @@ def telegram_menu():
 
         os.system("clear")
         print("=" * 60)
-        print(f" BITX ATTACK CHECK v{APP_VERSION} - TELEGRAM")
+        print(color_text(f" BITX ATTACK CHECK v{APP_VERSION} - TELEGRAM", "cyan"))
         print("=" * 60)
         print()
         print(f" Status       : {'ACTIV' if enabled else 'OPRIT'}")
@@ -1356,7 +1356,7 @@ def whitelist_menu():
     while True:
         os.system("clear")
         print("=" * 60)
-        print(f" BITX ATTACK CHECK v{APP_VERSION} - WHITELIST")
+        print(color_text(f" BITX ATTACK CHECK v{APP_VERSION} - WHITELIST", "cyan"))
         print("=" * 60)
         print()
         print("  1) Afiseaza whitelist")
@@ -1395,9 +1395,32 @@ def whitelist_menu():
             input("Enter pentru continuare...")
 
 
+def color_text(text, color):
+    # Plain output for systemd, pipes and terminals without color support.
+    codes = {"red": "31", "green": "32", "yellow": "33", "cyan": "36"}
+    if (not sys.stdout.isatty() or os.environ.get("TERM") == "dumb"
+            or "NO_COLOR" in os.environ):
+        return text
+    return f"\033[{codes[color]}m{text}\033[0m"
+
+
+def show_crawler_result(ip):
+    verdict = crawler_protection(ip)
+    if verdict in ("CRAWLER-GOOGLE", "CRAWLER-BING"):
+        message = f"{ip}: {verdict} - Daca este blocat, verifica deblocarea."
+        color = "red"
+    elif verdict == "CHECK-FAILED":
+        message = f"{ip}: CHECK-FAILED - Verificare indisponibila; rezultat neclar."
+        color = "yellow"
+    else:
+        message = f"{ip}: NOT-VERIFIED - Nu este identificat ca Googlebot/Bingbot; nu inseamna IP sigur."
+        color = "green"
+    print(color_text(message, color))
+
+
 def crawler_check_menu():
     while True:
-        print("\n===== VERIFICARE CRAWLER GOOGLE/BING =====")
+        print(color_text("\n===== VERIFICARE CRAWLER GOOGLE/BING =====", "cyan"))
         ip = input("IP de verificat (0 = Inapoi): ").strip()
         if ip == "0":
             return
@@ -1405,17 +1428,16 @@ def crawler_check_menu():
             # A failed check can be retried without restarting the application.
             if _crawler_results.get(ip) == "CHECK-FAILED":
                 _crawler_results.pop(ip, None)
-            print(f"{ip}: {crawler_protection(ip) or 'Nu este crawler Google/Bing verificat.'}")
+            show_crawler_result(ip)
         else:
             print("IP invalid.")
-        input("Enter pentru urmatorul IP...")
 
 
 def interactive_menu():
     while True:
         os.system("clear")
         print("=" * 60)
-        print(f" BITX ATTACK CHECK v{APP_VERSION}")
+        print(color_text(f" BITX ATTACK CHECK v{APP_VERSION}", "cyan"))
         print("=" * 60)
         print()
         print("  1) Analiza rapida - ultimele 15 minute")
@@ -1524,7 +1546,7 @@ if "--check-crawler" in args:
         ip = args[args.index("--check-crawler") + 1]
         if not valid_ip(ip):
             raise ValueError("IP invalid")
-        print(f"{ip}: {crawler_protection(ip) or 'NOT-VERIFIED'}")
+        show_crawler_result(ip)
         sys.exit(0)
     except (ValueError, IndexError):
         print("Usage: bitx-attack-check --check-crawler IP", file=sys.stderr)
@@ -1913,7 +1935,7 @@ for logfile in glob.glob(
 
 print()
 print("=" * 88)
-print(f" BITX ATTACK CHECK v{APP_VERSION}")
+print(color_text(f" BITX ATTACK CHECK v{APP_VERSION}", "cyan"))
 print("=" * 88)
 
 print(
