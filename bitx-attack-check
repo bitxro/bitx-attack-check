@@ -21,7 +21,7 @@ from collections import defaultdict, Counter
 from urllib.parse import urlsplit
 
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 APP_DIR = os.path.dirname(os.path.realpath(__file__))
 CONFIG_FILE = os.path.join(APP_DIR, "bitx-attack-check.conf")
@@ -1381,6 +1381,22 @@ def whitelist_menu():
             input("Enter pentru continuare...")
 
 
+def crawler_check_menu():
+    while True:
+        print("\n===== VERIFICARE CRAWLER GOOGLE/BING =====")
+        ip = input("IP de verificat (0 = Inapoi): ").strip()
+        if ip == "0":
+            return
+        if valid_ip(ip):
+            # A failed check can be retried without restarting the application.
+            if _crawler_results.get(ip) == "CHECK-FAILED":
+                _crawler_results.pop(ip, None)
+            print(f"{ip}: {crawler_protection(ip) or 'Nu este crawler Google/Bing verificat.'}")
+        else:
+            print("IP invalid.")
+        input("Enter pentru urmatorul IP...")
+
+
 def interactive_menu():
     while True:
         os.system("clear")
@@ -1471,12 +1487,7 @@ def interactive_menu():
             input("Enter pentru continuare...")
 
         elif choice == "12":
-            ip = input("IP de verificat: ").strip()
-            if valid_ip(ip):
-                print(crawler_protection(ip) or "Nu este crawler Google/Bing verificat.")
-            else:
-                print("IP invalid.")
-            input("Enter pentru continuare...")
+            crawler_check_menu()
 
         elif choice == "0":
             print("La revedere.")
