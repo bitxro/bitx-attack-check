@@ -4,8 +4,8 @@
 LOGDIR=/var/log/virtualmin
 FIREWALL_ZONE=public
 
-BLOCK_TIME=24h
-BLOCK_HOURS=24
+BLOCK_TIME=7d
+BLOCK_HOURS=168
 
 # Whitelist is intentionally empty in the repository.
 # Add trusted IPs locally from the interactive menu.
@@ -25,3 +25,4 @@ WP_LIMIT=20
 TELEGRAM_ENABLED=no
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
+TELEGRAM_REPORT_HOURS=09

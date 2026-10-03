@@ -21,7 +21,7 @@ from collections import defaultdict, Counter
 from urllib.parse import urlsplit
 
 
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.1.0"
 
 APP_DIR = os.path.dirname(os.path.realpath(__file__))
 CONFIG_FILE = os.path.join(APP_DIR, "bitx-attack-check.conf")
@@ -29,12 +29,7 @@ STATE_DIR = os.path.join(APP_DIR, "data")
 STATE_FILE = os.path.join(STATE_DIR, "blocks.json")
 HISTORY_FILE = os.path.join(STATE_DIR, "history.json")
 HISTORY_RESET_DAYS = 90
-BAN_LEVELS = (
-    (24, "24h"),
-    (24 * 7, "7 zile"),
-    (24 * 30, "30 zile"),
-    (24 * 90, "90 zile"),
-)
+BAN_WEEK_HOURS = 24 * 7
 
 
 # ============================================================
@@ -90,13 +85,13 @@ FIREWALL_ZONE = CONFIG.get(
 
 BLOCK_TIME = CONFIG.get(
     "BLOCK_TIME",
-    "24h"
+    "7d"
 )
 
 BLOCK_HOURS = int(
     CONFIG.get(
         "BLOCK_HOURS",
-        "24"
+        str(BAN_WEEK_HOURS)
     )
 )
 
@@ -125,6 +120,18 @@ TELEGRAM_CHAT_ID = CONFIG.get(
     "TELEGRAM_CHAT_ID",
     ""
 ).strip()
+
+TELEGRAM_REPORT_HOURS = []
+for raw_hour in CONFIG.get("TELEGRAM_REPORT_HOURS", "09").split(","):
+    raw_hour = raw_hour.strip()
+    if not raw_hour:
+        continue
+    try:
+        hour = int(raw_hour)
+        if 0 <= hour <= 23 and hour not in TELEGRAM_REPORT_HOURS:
+            TELEGRAM_REPORT_HOURS.append(hour)
+    except ValueError:
+        pass
 
 for entry in CONFIG.get("IGNORE_IP", []):
     ip, separator, description = entry.partition("|")
@@ -367,17 +374,114 @@ def telegram_send(message, force=False, token=None, chat_id=None):
         return False, str(e)
 
 
-def telegram_block_notification(ip, reason, duration_label, recurrence):
-    host = socket.gethostname()
-    message = (
-        f"🛡️ <b>Attack - {host}</b>\n"
-        f"🚫 <b>IP blocat:</b> <code>{ip}</code>\n"
-        f"⏱️ <b>Durata:</b> <code>{duration_label}</code>\n"
-        f"🔁 <b>Recidiva:</b> <code>{recurrence}</code>\n"
-        f"⚠️ <b>Motiv:</b> <code>{reason}</code>\n"
-        "🔴 <b>AUTO-BLOCK</b>"
-    )
-    return telegram_send(message)
+def telegram_report_state_path():
+    return os.path.join(STATE_DIR, "telegram-report.json")
+
+
+def load_telegram_report_state():
+    try:
+        with open(telegram_report_state_path(), "r") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            return data
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return {}
+
+
+def save_telegram_report_state(state):
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    tmp = telegram_report_state_path() + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(state, fh, indent=2, sort_keys=True)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, telegram_report_state_path())
+
+
+def format_scan_type(reason):
+    if not reason:
+        return "-"
+    parts = []
+    for chunk in reason.split(","):
+        chunk = chunk.strip()
+        if chunk.startswith("SCAN=") and "+4XX=" in chunk:
+            parts.append("SCAN+4XX")
+        elif chunk.startswith("SCAN="):
+            parts.append("SCAN")
+        elif chunk.startswith("WP="):
+            parts.append("WP-PROBE")
+        else:
+            parts.append(chunk)
+    return ",".join(dict.fromkeys(parts)) or "-"
+
+
+def build_blocked_report():
+    active_ips, err = get_active_blocked_ips()
+    if active_ips is None:
+        return None, f"Eroare firewalld: {err}"
+
+    state = load_state()
+    lines = [
+        f"🛡️ <b>Attack - {socket.gethostname()}</b>",
+        f"🚫 <b>IP-uri blocate active:</b> <code>{len(active_ips)}</code>",
+    ]
+
+    if not active_ips:
+        lines.append("🟢 Niciun IP blocat momentan.")
+        return "\n".join(lines), None
+
+    for ip in sorted(
+        active_ips,
+        key=lambda x: (
+            ipaddress.ip_address(x).version,
+            int(ipaddress.ip_address(x))
+        )
+    ):
+        info = state.get(ip, {})
+        reason = info.get("reason", "pre-existing")
+        scan_type = format_scan_type(reason)
+        duration = info.get("duration", "?")
+        recurrence = info.get("recurrence", "?")
+        try:
+            expires = datetime.fromisoformat(info["expires"])
+            remaining = remaining_time(expires)
+        except Exception:
+            remaining = "?"
+        lines.extend([
+            "",
+            f"• <code>{ip}</code>",
+            f"  Tip: <code>{scan_type}</code>",
+            f"  Motiv: <code>{reason}</code>",
+            f"  Ramane: <code>{remaining}</code>",
+            f"  Ban: <code>{duration}</code> | Recidiva: <code>{recurrence}</code>",
+        ])
+
+    return "\n".join(lines), None
+
+
+def maybe_send_scheduled_telegram_report(now=None):
+    if not TELEGRAM_ENABLED or not TELEGRAM_REPORT_HOURS:
+        return False, "DISABLED"
+
+    now = now or datetime.now()
+    if now.hour not in TELEGRAM_REPORT_HOURS:
+        return False, "NOT-DUE"
+
+    slot = f"{now:%Y-%m-%d}-{now.hour:02d}"
+    report_state = load_telegram_report_state()
+    if report_state.get("last_slot") == slot:
+        return False, "ALREADY-SENT"
+
+    message, error = build_blocked_report()
+    if error:
+        return False, error
+
+    ok, result = telegram_send(message)
+    if ok:
+        report_state["last_slot"] = slot
+        report_state["last_sent"] = now.isoformat(timespec="seconds")
+        save_telegram_report_state(report_state)
+    return ok, result
 
 
 # ============================================================
@@ -474,8 +578,9 @@ def next_ban(ip):
         pass
 
     recurrence = count + 1
-    level = min(recurrence - 1, len(BAN_LEVELS) - 1)
-    hours, label = BAN_LEVELS[level]
+    weeks = recurrence
+    hours = BAN_WEEK_HOURS * weeks
+    label = "7 zile" if weeks == 1 else f"{weeks} saptamani"
     return hours, label, recurrence
 
 
@@ -802,20 +907,6 @@ def firewall_block(ip, reason):
         )
         register_history_block(ip, recurrence)
 
-        telegram_send_ok, telegram_send_msg = telegram_block_notification(
-            ip,
-            reason,
-            duration_label,
-            recurrence
-        )
-
-        if TELEGRAM_ENABLED and not telegram_send_ok:
-            print(
-                f"[WARN] Telegram notification failed for {ip}: "
-                f"{telegram_send_msg}",
-                file=sys.stderr
-            )
-
         return (
             True,
             f"BLOCKED-{duration_label}"
@@ -933,10 +1024,11 @@ def show_blocked():
     print(
         f"{'IP':39} "
         f"{'REMAINING':>10}  "
+        f"{'TYPE':16} "
         f"REASON"
     )
 
-    print("-" * 80)
+    print("-" * 100)
 
     for ip in sorted(
         active_ips,
@@ -981,6 +1073,7 @@ def show_blocked():
         print(
             f"{ip:39} "
             f"{remaining:>10}  "
+            f"{format_scan_type(reason)[:16]:16} "
             f"{reason}"
         )
 
@@ -1289,12 +1382,15 @@ def telegram_menu():
         print()
         print(f" Status       : {'ACTIV' if enabled else 'OPRIT'}")
         print(f" Bot token    : {'configurat' if token else 'neconfigurat'}")
+        report_hours_raw = current.get("TELEGRAM_REPORT_HOURS", "09").strip() or "09"
         print(f" Chat ID      : {'configurat' if chat_id else 'neconfigurat'}")
+        print(f" Ore raport   : {report_hours_raw}")
         print()
         print("  1) Configureaza token + Chat ID")
         print("  2) Activeaza notificari")
         print("  3) Dezactiveaza notificari")
-        print("  4) Trimite mesaj de test")
+        print("  4) Configureaza ore raport (ex: 09 sau 09,18)")
+        print("  5) Trimite mesaj de test")
         print()
         print("  0) Inapoi")
         print()
@@ -1331,6 +1427,29 @@ def telegram_menu():
             input("Enter pentru continuare...")
 
         elif choice == "4":
+            raw = input("Ore raport, separate prin virgula [09]: ").strip() or "09"
+            hours = []
+            valid = True
+            for item in raw.split(","):
+                item = item.strip()
+                try:
+                    hour = int(item)
+                    if not 0 <= hour <= 23:
+                        raise ValueError
+                    if hour not in hours:
+                        hours.append(hour)
+                except ValueError:
+                    valid = False
+                    break
+            if not valid or not hours:
+                print("Format invalid. Exemplu: 09 sau 09,18")
+            else:
+                value = ",".join(f"{hour:02d}" for hour in sorted(hours))
+                update_config_values({"TELEGRAM_REPORT_HOURS": value})
+                print(f"Ore raport salvate: {value}")
+            input("Enter pentru continuare...")
+
+        elif choice == "5":
             if not token or not chat_id:
                 print("Configureaza mai intai tokenul si Chat ID.")
             else:
@@ -1970,7 +2089,7 @@ else:
 if block_mode:
 
     print(
-        " Auto-ban : ACTIV (progresiv: 24h -> 7d -> 30d -> 90d)"
+        " Auto-ban : ACTIV (7 zile + 7 zile la fiecare recidiva)"
     )
 
 elif dry_run:
@@ -2448,3 +2567,8 @@ else:
 
 print("=" * 88)
 print()
+
+if block_mode:
+    report_ok, report_msg = maybe_send_scheduled_telegram_report()
+    if TELEGRAM_ENABLED and report_msg not in ("DISABLED", "NOT-DUE", "ALREADY-SENT", "SENT") and not report_ok:
+        print(f"[WARN] Telegram report failed: {report_msg}", file=sys.stderr)
